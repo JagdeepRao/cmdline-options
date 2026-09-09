@@ -46,6 +46,8 @@ from pathlib import Path
 import pandas as pd
 from breeze_connect import BreezeConnect
 
+from data_cache import DataCache
+
 CACHE_DIR = Path("./data_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -107,6 +109,7 @@ class NiftyOptionsDataBreeze:
     def __init__(self, api_key: str, api_secret: str, session_token: str):
         self.breeze = BreezeConnect(api_key=api_key)
         self.breeze.generate_session(api_secret=api_secret, session_token=session_token)
+        self._cache = DataCache(CACHE_DIR)
 
     # ─────────────────────────────────────────────
     # STRIKE RESOLUTION — broker-agnostic, same logic as the Pine Script panel
@@ -131,41 +134,37 @@ class NiftyOptionsDataBreeze:
         to_date: dt.date,
         interval: str = "1minute",
     ) -> pd.DataFrame:
-        cache_key = f"NIFTY_{expiry}_{strike}_{right}_{interval}_{from_date}_{to_date}"
-        cache_path = CACHE_DIR / f"{cache_key}.parquet"
-        if cache_path.exists():
-            return pd.read_parquet(cache_path)
+        cache_key = f"NIFTY_{expiry}_{strike}_{right}_{interval}"
 
-        chunk_days = CHUNK_DAYS.get(interval, 7)
-        all_rows = []
-        cursor = from_date
-        while cursor <= to_date:
-            chunk_end = min(cursor + dt.timedelta(days=chunk_days), to_date)
-            try:
-                resp = self.breeze.get_historical_data_v2(
-                    interval=interval,
-                    from_date=_breeze_date(cursor, dt.time(0, 0, 0)),
-                    to_date=_breeze_date(chunk_end, dt.time(23, 59, 59)),
-                    stock_code="NIFTY",
-                    exchange_code="NFO",
-                    product_type="options",
-                    expiry_date=_breeze_date(expiry),
-                    right=right,
-                    strike_price=str(strike),
-                )
-                if resp.get("Success"):
-                    all_rows.extend(resp["Success"])
-                elif resp.get("Error"):
-                    print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
-            except Exception as e:
-                print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
-            cursor = chunk_end + dt.timedelta(days=1)
-            time.sleep(REQUEST_SLEEP_SECONDS)
+        def fetch_fn(fd: dt.date, td: dt.date) -> pd.DataFrame:
+            chunk_days = CHUNK_DAYS.get(interval, 7)
+            all_rows = []
+            cursor = fd
+            while cursor <= td:
+                chunk_end = min(cursor + dt.timedelta(days=chunk_days), td)
+                try:
+                    resp = self.breeze.get_historical_data_v2(
+                        interval=interval,
+                        from_date=_breeze_date(cursor, dt.time(0, 0, 0)),
+                        to_date=_breeze_date(chunk_end, dt.time(23, 59, 59)),
+                        stock_code="NIFTY",
+                        exchange_code="NFO",
+                        product_type="options",
+                        expiry_date=_breeze_date(expiry),
+                        right=right,
+                        strike_price=str(strike),
+                    )
+                    if resp.get("Success"):
+                        all_rows.extend(resp["Success"])
+                    elif resp.get("Error"):
+                        print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
+                except Exception as e:
+                    print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
+                cursor = chunk_end + dt.timedelta(days=1)
+                time.sleep(REQUEST_SLEEP_SECONDS)
+            return pd.DataFrame(all_rows)
 
-        df = pd.DataFrame(all_rows)
-        if not df.empty:
-            df.to_parquet(cache_path)
-        return df
+        return self._cache.get(cache_key, from_date, to_date, fetch_fn)
 
     # ─────────────────────────────────────────────
     # HISTORICAL DATA — UNDERLYING INDEX (for strike resolution / spot reference)
@@ -176,38 +175,34 @@ class NiftyOptionsDataBreeze:
         to_date: dt.date,
         interval: str = "1minute",
     ) -> pd.DataFrame:
-        cache_key = f"NIFTY_INDEX_{interval}_{from_date}_{to_date}"
-        cache_path = CACHE_DIR / f"{cache_key}.parquet"
-        if cache_path.exists():
-            return pd.read_parquet(cache_path)
+        cache_key = f"NIFTY_INDEX_{interval}"
 
-        chunk_days = CHUNK_DAYS.get(interval, 7)
-        all_rows = []
-        cursor = from_date
-        while cursor <= to_date:
-            chunk_end = min(cursor + dt.timedelta(days=chunk_days), to_date)
-            try:
-                resp = self.breeze.get_historical_data_v2(
-                    interval=interval,
-                    from_date=_breeze_date(cursor, dt.time(0, 0, 0)),
-                    to_date=_breeze_date(chunk_end, dt.time(23, 59, 59)),
-                    stock_code="NIFTY",
-                    exchange_code="NSE",
-                    product_type="cash",
-                )
-                if resp.get("Success"):
-                    all_rows.extend(resp["Success"])
-                elif resp.get("Error"):
-                    print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
-            except Exception as e:
-                print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
-            cursor = chunk_end + dt.timedelta(days=1)
-            time.sleep(REQUEST_SLEEP_SECONDS)
+        def fetch_fn(fd: dt.date, td: dt.date) -> pd.DataFrame:
+            chunk_days = CHUNK_DAYS.get(interval, 7)
+            all_rows = []
+            cursor = fd
+            while cursor <= td:
+                chunk_end = min(cursor + dt.timedelta(days=chunk_days), td)
+                try:
+                    resp = self.breeze.get_historical_data_v2(
+                        interval=interval,
+                        from_date=_breeze_date(cursor, dt.time(0, 0, 0)),
+                        to_date=_breeze_date(chunk_end, dt.time(23, 59, 59)),
+                        stock_code="NIFTY",
+                        exchange_code="NSE",
+                        product_type="cash",
+                    )
+                    if resp.get("Success"):
+                        all_rows.extend(resp["Success"])
+                    elif resp.get("Error"):
+                        print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
+                except Exception as e:
+                    print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
+                cursor = chunk_end + dt.timedelta(days=1)
+                time.sleep(REQUEST_SLEEP_SECONDS)
+            return pd.DataFrame(all_rows)
 
-        df = pd.DataFrame(all_rows)
-        if not df.empty:
-            df.to_parquet(cache_path)
-        return df
+        return self._cache.get(cache_key, from_date, to_date, fetch_fn)
 
     def find_atm_strike(
         self,
