@@ -1,14 +1,18 @@
 """
 Regression tests for backtest_engine.run_full_backtest().
 
-These exist to make two kinds of claims checkable, not just assertable:
+These exist to make three kinds of claims checkable, not just assertable:
   1. Every management shape and every position-combination actually runs
      end-to-end and produces a valid metrics.full_report().
   2. The equity curve is internally consistent with the realized trade
-     P&Ls -- this specifically guards against the bug found during manual
-     review, where a position that had gone flat was skipped when marking
-     equity, silently dropping its entire realized P&L from every
-     subsequent bar. See test_equity_curve_reflects_realized_pnl_even_after_flat.
+     P&Ls -- guards against the bug found during manual review, where a
+     position that had gone flat was skipped when marking equity, silently
+     dropping its realized P&L from every subsequent bar. See
+     test_equity_curve_reflects_realized_pnl_even_after_flat.
+  3. A position force-closed for expiry never reopens later in the same
+     run -- guards against the bug found via download_and_run_strategy.py,
+     where RenkoLegTracker/the overlay's long-leg entry had no memory of
+     WHY a position went flat. See test_no_reopen_after_expiry_eve_force_close.
 """
 
 import datetime as dt
@@ -18,15 +22,19 @@ import pytest
 
 from market_data import SyntheticMarketDataProvider
 from backtest_engine import FullBacktestConfig, run_full_backtest
+from expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
 import metrics
 
 warnings.filterwarnings("ignore", message="divide by zero encountered")
 warnings.filterwarnings("ignore", message="invalid value encountered")
+warnings.filterwarnings("ignore", message="Using the SHIPPED TEMPLATE")  # expected: tests intentionally use the sample calendar
 
 START = dt.datetime(2026, 9, 1, 9, 15)
-END = dt.datetime(2026, 9, 4, 15, 30)
-WEEKLY_EXPIRY = dt.date(2026, 9, 4)
-MONTHLY_EXPIRY = dt.date(2026, 9, 24)
+END = dt.datetime(2026, 9, 8, 15, 30)  # ends ON the weekly expiry date itself, per expiry_calendar.csv
+
+_calendar = load_expiry_calendar()
+WEEKLY_EXPIRY, WEEKLY_EXPIRY_PRIOR = get_next_expiry(_calendar, END.date(), "weekly")
+MONTHLY_EXPIRY, MONTHLY_EXPIRY_PRIOR = select_monthly_hedge_expiry_from_calendar(_calendar, START.date())
 
 
 def _provider(seed=42, annual_vol=0.35):
@@ -37,9 +45,15 @@ def _provider(seed=42, annual_vol=0.35):
 
 
 def _base_kwargs(**overrides):
-    kwargs = dict(start=START, end=END, weekly_expiry=WEEKLY_EXPIRY, bar_freq_minutes=15)
+    kwargs = dict(start=START, end=END, weekly_expiry=WEEKLY_EXPIRY,
+                  weekly_expiry_prior_trading_day=WEEKLY_EXPIRY_PRIOR, bar_freq_minutes=15)
     kwargs.update(overrides)
     return kwargs
+
+
+def _hedge_kwargs():
+    return dict(include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
+                monthly_expiry_prior_trading_day=MONTHLY_EXPIRY_PRIOR)
 
 
 def _assert_valid_report(result, initial_capital=100_000.0):
@@ -65,10 +79,7 @@ def test_each_sold_leg_strategy_runs_and_produces_metrics(strategy_name):
 
 def test_hedge_straddle_included_and_managed():
     provider = _provider()
-    config = FullBacktestConfig(**_base_kwargs(
-        sold_leg_strategy_name="delta_threshold",
-        include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
-    ))
+    config = FullBacktestConfig(**_base_kwargs(sold_leg_strategy_name="delta_threshold", **_hedge_kwargs()))
     result = run_full_backtest(provider, config)
     _assert_valid_report(result)
     assert "hedge_straddle" in result.positions
@@ -121,8 +132,7 @@ def test_otm_pnl_scales_linearly_with_multiplier():
 def test_everything_combined_runs():
     provider = _provider()
     config = FullBacktestConfig(**_base_kwargs(
-        sold_leg_strategy_name="delta_threshold",
-        include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
+        sold_leg_strategy_name="delta_threshold", **_hedge_kwargs(),
         include_overlay=True, overlay_hourly_kind="rsi", overlay_gating_kind="rsi",
         include_otm=True, otm_multiplier=2,
     ))
@@ -190,12 +200,9 @@ def test_no_reopen_after_expiry_eve_force_close():
     assert force_closed_positions, "expected at least sold_straddle to have been force-closed in this run"
 
 
-
+def test_expiry_eve_force_close_actually_closes_positions():
     provider = _provider()
-    config = FullBacktestConfig(**_base_kwargs(
-        sold_leg_strategy_name="delta_threshold",
-        include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
-    ))
+    config = FullBacktestConfig(**_base_kwargs(sold_leg_strategy_name="delta_threshold", **_hedge_kwargs()))
     result = run_full_backtest(provider, config)
 
     force_close_lines = [l for l in result.action_log if "FORCE-CLOSE" in l]
@@ -213,6 +220,18 @@ def test_no_reopen_after_expiry_eve_force_close():
 def test_missing_monthly_expiry_raises_when_hedge_requested():
     provider = _provider()
     config = FullBacktestConfig(**_base_kwargs(sold_leg_strategy_name="delta_threshold", include_hedge_straddle=True))
+    with pytest.raises(ValueError):
+        run_full_backtest(provider, config)
+
+
+def test_missing_monthly_expiry_prior_trading_day_raises_when_hedge_requested():
+    """Same as above, but for the case where monthly_expiry was given but
+    its prior trading day (the actual expiry-eve close date) was not --
+    both must be supplied together."""
+    provider = _provider()
+    config = FullBacktestConfig(**_base_kwargs(
+        sold_leg_strategy_name="delta_threshold", include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
+    ))
     with pytest.raises(ValueError):
         run_full_backtest(provider, config)
 

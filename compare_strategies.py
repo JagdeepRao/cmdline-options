@@ -15,10 +15,12 @@ zero changes to the comparison logic itself.
 """
 
 import datetime as dt
+import warnings
 import pandas as pd
 
 from market_data import SyntheticMarketDataProvider
 from backtest_engine import FullBacktestConfig, run_full_backtest
+from expiry_utils import load_expiry_calendar, get_next_expiry
 import metrics
 
 COLUMN_ORDER = [
@@ -55,9 +57,11 @@ def compare_strategies(provider_factory, base_config_kwargs: dict) -> pd.DataFra
 
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore", message="Using the SHIPPED TEMPLATE")
+
     start = dt.datetime(2026, 9, 1, 9, 15)
-    end = dt.datetime(2026, 9, 4, 15, 30)
-    weekly_expiry = dt.date(2026, 9, 4)
+    end = dt.datetime(2026, 9, 8, 15, 30)
+    weekly_expiry, weekly_expiry_prior = get_next_expiry(load_expiry_calendar(), end.date(), "weekly")
 
     def provider_factory():
         # SYNTHETIC provider for now -- proves the comparison pipeline works.
@@ -68,8 +72,9 @@ if __name__ == "__main__":
             initial_spot=24500, annual_vol=0.15, flat_iv=0.13, seed=7,
         )
 
-    base_kwargs = dict(start=start, end=end, weekly_expiry=weekly_expiry, bar_freq_minutes=15,
-                        initial_capital=100_000, lot_size=1)
+    base_kwargs = dict(start=start, end=end, weekly_expiry=weekly_expiry,
+                        weekly_expiry_prior_trading_day=weekly_expiry_prior,
+                        bar_freq_minutes=15, initial_capital=100_000, lot_size=1)
 
     table = compare_strategies(provider_factory, base_kwargs)
     print(table.to_string())

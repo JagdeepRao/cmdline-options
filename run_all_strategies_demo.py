@@ -16,6 +16,7 @@ import pandas as pd
 
 from market_data import SyntheticMarketDataProvider
 from backtest_engine import FullBacktestConfig, run_full_backtest
+from expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
 import metrics
 
 # vollib divides by zero internally for a handful of near-degenerate quotes
@@ -24,14 +25,18 @@ import metrics
 # not a sign anything here is actually wrong.
 warnings.filterwarnings("ignore", message="divide by zero encountered")
 warnings.filterwarnings("ignore", message="invalid value encountered")
+# load_expiry_calendar's "shipped template" warning is expected here -- this
+# demo intentionally uses the sample calendar, not a real one.
+warnings.filterwarnings("ignore", message="Using the SHIPPED TEMPLATE")
 
 pd.set_option("display.width", 160)
 pd.set_option("display.max_columns", 20)
 
 START = dt.datetime(2026, 9, 1, 9, 15)
-END = dt.datetime(2026, 9, 4, 15, 30)     # Tue-Fri, before the Fri weekly expiry
-WEEKLY_EXPIRY = dt.date(2026, 9, 4)       # Friday -- expiry eve is Thursday 9/3
-MONTHLY_EXPIRY = dt.date(2026, 9, 24)     # comfortably >15 days from any bar in this window
+END = dt.datetime(2026, 9, 8, 15, 30)      # ends ON the weekly expiry date itself, per the calendar
+_calendar = load_expiry_calendar()
+WEEKLY_EXPIRY, WEEKLY_EXPIRY_PRIOR = get_next_expiry(_calendar, END.date(), "weekly")
+MONTHLY_EXPIRY, MONTHLY_EXPIRY_PRIOR = select_monthly_hedge_expiry_from_calendar(_calendar, START.date())
 
 REPORT_COLUMNS = [
     "total_return", "total_return_pct", "max_drawdown", "max_drawdown_pct",
@@ -67,7 +72,8 @@ def main():
     rows = []
 
     # --- 1. Sold straddle only, each of the four management shapes ---
-    base_kwargs = dict(start=START, end=END, weekly_expiry=WEEKLY_EXPIRY, bar_freq_minutes=15)
+    base_kwargs = dict(start=START, end=END, weekly_expiry=WEEKLY_EXPIRY,
+                        weekly_expiry_prior_trading_day=WEEKLY_EXPIRY_PRIOR, bar_freq_minutes=15)
 
     rows.append(run_one("sold_straddle only -- delta_threshold",
                          FullBacktestConfig(**base_kwargs, sold_leg_strategy_name="delta_threshold")))
@@ -81,7 +87,8 @@ def main():
     # --- 2. + monthly hedge straddle ---
     rows.append(run_one("sold + hedge straddle -- delta_threshold",
                          FullBacktestConfig(**base_kwargs, sold_leg_strategy_name="delta_threshold",
-                                             include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY)))
+                                             include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
+                                             monthly_expiry_prior_trading_day=MONTHLY_EXPIRY_PRIOR)))
 
     # --- 3. + directional overlay (needs an indicator-capable core to make sense, but works with any) ---
     rows.append(run_one("sold straddle + directional overlay (RSI both signals)",
@@ -101,6 +108,7 @@ def main():
     rows.append(run_one("EVERYTHING: sold + hedge + overlay + OTM (delta_threshold core, RSI overlay, 2x OTM)",
                          FullBacktestConfig(**base_kwargs, sold_leg_strategy_name="delta_threshold",
                                              include_hedge_straddle=True, monthly_expiry=MONTHLY_EXPIRY,
+                                             monthly_expiry_prior_trading_day=MONTHLY_EXPIRY_PRIOR,
                                              include_overlay=True, overlay_hourly_kind="rsi", overlay_gating_kind="rsi",
                                              include_otm=True, otm_multiplier=2)))
 

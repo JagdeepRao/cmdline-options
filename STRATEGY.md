@@ -36,13 +36,54 @@ either side of an approximate spot and picking the minimum-difference one.
 
 ### 1.2 Monthly hedge expiry selection
 
-`expiry_utils.select_monthly_hedge_expiry(as_of, current_month_expiry,
-next_month_expiry, min_days=15)`: use the current calendar month's monthly
-expiry as the hedge unless it's less than 15 days from `as_of`, in which
-case roll to next month's monthly expiry. The actual expiry *dates* (e.g.
-"last Thursday of the month") are supplied by the caller — this function is
-pure calendar arithmetic on two dates you already have, not a source of
-NSE calendar knowledge.
+`expiry_utils.select_monthly_hedge_expiry_from_calendar(calendar, as_of,
+min_days=15)`: use the current month's monthly expiry (looked up from
+`expiry_calendar.csv`, not computed from a "last Thursday of the month"
+formula) as the hedge unless it's less than 15 days from `as_of`, in which
+case roll to next month's monthly expiry, also looked up from the
+calendar. `select_monthly_hedge_expiry` (pure date arithmetic on two
+already-resolved candidate dates) still exists for callers that source the
+candidates themselves, but new code should prefer the calendar-backed
+version — see §1.2.1.
+
+#### 1.2.1 Why a calendar file, not a formula
+
+NIFTY's weekly expiry day has itself changed exchange-side before (moved
+off Thursday), so any "next Thursday" / "last Thursday of the month" rule
+is a bet on a convention that has already proven not to hold — the same
+applies to monthly expiries. `expiry_calendar.csv` (loaded via
+`expiry_utils.load_expiry_calendar()`) is the single source of truth
+instead: a plain table of `expiry_type` (weekly/monthly), `expiry_date`,
+and `prior_trading_day` (the actual last NSE trading day before that
+expiry, with holidays already accounted for — not necessarily
+`expiry_date - 1 day`).
+
+**The shipped `expiry_calendar.csv` is an illustrative template, not the
+real NSE calendar** — `load_expiry_calendar()` prints a warning every time
+it loads the default file for exactly this reason. Replace it with the
+actual expiry/holiday calendar (from NSE's published circulars or your
+broker's contract master) before running this against real trading
+decisions. `load_expiry_calendar()` also validates the file on load
+(required columns present, `prior_trading_day` strictly before
+`expiry_date` for every row, `expiry_type` values recognized) and raises
+immediately on a malformed entry rather than silently producing a wrong
+expiry-eve close later.
+
+Lookup functions built on top of the loaded calendar:
+- `get_next_expiry(calendar, as_of, expiry_type)` — first expiry of that
+  type on/after `as_of`; raises if the calendar doesn't cover that far
+  forward (extend the file rather than guessing).
+- `get_prior_trading_day_for_expiry(calendar, expiry_date, expiry_type)` —
+  exact-match lookup when the caller already knows a specific expiry date
+  (e.g. passed explicitly on a command line) and just needs its prior
+  trading day.
+
+`FullBacktestConfig` takes the resolved `weekly_expiry_prior_trading_day`
+(and, when a hedge is included, `monthly_expiry_prior_trading_day`)
+directly as required fields — the engine itself has zero calendar-file
+knowledge and never derives a prior trading day by subtraction; callers
+(the CLI scripts, or your own code) are expected to resolve these via the
+calendar before constructing the config.
 
 ### 1.3 Directional overlay structure
 
@@ -203,8 +244,11 @@ straddle vs. its monthly hedge, and the overlay's short leg vs. its long
 leg) is force-closed the trading day **before** expiry, at/after
 `close_time` (15:30 default):
 
-- `is_expiry_eve_close_bar(as_of, expiry_date, close_time)` — true from
-  that bar onward on the eve day.
+- `is_expiry_eve_close_bar(as_of, prior_trading_day, close_time)` — true
+  from that bar onward on the actual last trading day before expiry, as
+  looked up from `expiry_calendar.csv` (via `get_next_expiry` or
+  `get_prior_trading_day_for_expiry`). Takes `prior_trading_day` directly
+  rather than deriving it from `expiry_date` — see §1.2.1 for why.
 - `is_on_or_after_expiry(as_of, expiry_date)` — hard backstop so nothing
   survives past expiry regardless of whether the eve-close bar landed
   exactly on a bar timestamp.
@@ -215,10 +259,12 @@ schedule or are allowed to run past it (closing only on their own Renko
 exit signal) is a config choice for the engine, not something
 `expiry_utils` decides — see **Open questions**.
 
-**Stated limitation**: "the day before expiry" is calendar-date-minus-one,
-not "the previous NSE trading day." Correct for the common non-Monday
-weekly-expiry case; would need a real trading-calendar lookup if that ever
-changes.
+**RESOLVED (previously a stated limitation)**: this used to derive
+"the day before expiry" as calendar-date-minus-one, which breaks on any
+holiday-adjacent expiry and doesn't survive the exchange changing which
+weekday expiry falls on. Both `is_expiry_eve_close_bar` and
+`FullBacktestConfig` now take the actual prior trading day directly,
+sourced from `expiry_calendar.csv` — see §1.2.1.
 
 ---
 
@@ -272,7 +318,12 @@ here for visibility.
 | `sample_data.py` | Deterministic synthetic OHLCV generators used by `data_layer_sample.py` and tests |
 | `data_cache.py` | File-based incremental cache with retry/backoff, sitting in front of every historical-data fetch |
 | `expiry_utils.py` | Monthly hedge expiry selection, expiry-eve close-bar timing |
-| `market_data.py` | `MarketDataProvider` abstraction (`SyntheticMarketDataProvider` / `BreezeMarketDataProvider`) consumed by the backtest engine |
+| `market_data.py` | `MarketDataProvider` abstraction (`SyntheticMarketDataProvider` / `BreezeMarketDataProvider`), proper OHLC resampling (`_resample_ohlc`) |
 | `metrics.py` | Equity-curve and trade-level performance metrics (Sharpe, Sortino, Calmar, drawdown, win rate, etc.) |
 | `backtest_engine.py` | Time-stepping loop that opens positions, evaluates strategies, and executes their actions bar-by-bar |
-| `test_quick_strategy_checks.py`, `test_point1_point2_checks.py` | Fast, dependency-light checks for the pieces described in this document |
+| `expiry_calendar.csv` | The expiry/prior-trading-day source of truth — **shipped as an illustrative template, replace before real use** |
+| `download_option_data.py` | Downloads a real (or synthetic-fallback) option leg/index and annotates it with indicator BUY/SELL signals, for manually validating an indicator against real price action |
+| `download_and_run_strategy.py` | Runs a full strategy against real (or synthetic-fallback) data and prints every adjustment decision with its trigger, for manually validating the strategy layer the same way |
+| `run_backtest_from_range.py` | Turnkey entry point: give it a date range, it resolves expiries from the calendar and returns a metrics table across all strategy/position combinations |
+| `compare_strategies.py`, `run_all_strategies_demo.py` | Demo/comparison scripts against synthetic data |
+| `test_quick_strategy_checks.py`, `test_point1_point2_checks.py`, `test_full_backtest_engine.py`, `test_data_cache.py`, `test_market_data_and_expiry_detection.py` | Full test suite (46 tests) for the pieces described in this document |

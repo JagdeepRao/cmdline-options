@@ -3,15 +3,24 @@ Tests for:
   - market_data._resample_ohlc: proper OHLC resampling vs the naive
     row-skipping it replaced (regression test for the bug found while
     building the real-data validation scripts).
-  - run_backtest_from_range's expiry auto-detection helpers.
+  - expiry_utils' calendar loading/lookup functions, which replaced the
+    original day-of-week heuristic ("next Thursday") after NIFTY's weekly
+    expiry day itself changed exchange-side.
 """
 
 import datetime as dt
+import warnings
+
 import pandas as pd
 import pytest
 
 from market_data import _resample_ohlc, SyntheticMarketDataProvider
-from run_backtest_from_range import _next_or_same_thursday, _last_thursday_of_month, _derive_monthly_hedge_expiry
+from expiry_utils import (
+    load_expiry_calendar, get_next_expiry, get_prior_trading_day_for_expiry,
+    select_monthly_hedge_expiry_from_calendar, select_monthly_hedge_expiry,
+)
+
+warnings.filterwarnings("ignore", message="Using the SHIPPED TEMPLATE")
 
 
 def test_resample_ohlc_takes_last_close_not_first():
@@ -24,7 +33,6 @@ def test_resample_ohlc_takes_last_close_not_first():
     df = pd.DataFrame({"datetime": timestamps, "close": closes, "high": closes, "low": closes, "open": closes})
 
     resampled = _resample_ohlc(df, freq_minutes=15)
-
     naive_skip = df.iloc[::15].reset_index(drop=True)
 
     # proper resample's close for the first 15-min bin should be the LAST
@@ -34,7 +42,6 @@ def test_resample_ohlc_takes_last_close_not_first():
     assert resampled.iloc[0]["close"] != naive_skip.iloc[0]["close"], (
         "this test is only meaningful if proper resampling and naive row-skipping actually disagree"
     )
-    # OHLC columns should reflect the whole window, not just one row
     assert resampled.iloc[0]["high"] == 114
     assert resampled.iloc[0]["low"] == 100
     assert resampled.iloc[0]["open"] == 100
@@ -51,39 +58,105 @@ def test_synthetic_provider_option_price_series_uses_proper_resample():
     series_15min = provider.option_price_series(24500, "call", dt.date(2026, 9, 4), start, end, freq_minutes=15)
 
     assert len(series_15min) < len(series_1min)
-    # the 15-min series' close values should be a SUBSET of actual 1-min
-    # closes that occurred at the LAST minute of each bin, not the first
     first_bin_1min_closes = series_1min[series_1min["datetime"] <= start + dt.timedelta(minutes=14)]["close"]
     last_close_in_first_bin = first_bin_1min_closes.iloc[-1]
     assert abs(series_15min.iloc[0]["close"] - last_close_in_first_bin) < 1e-9
 
 
-@pytest.mark.parametrize("input_date,expected", [
-    (dt.date(2026, 9, 1), dt.date(2026, 9, 3)),   # Tuesday -> that week's Thursday
-    (dt.date(2026, 9, 3), dt.date(2026, 9, 3)),   # Thursday -> itself
-    (dt.date(2026, 9, 4), dt.date(2026, 9, 10)),  # Friday -> NEXT week's Thursday (correctly, not the one just passed)
-])
-def test_next_or_same_thursday(input_date, expected):
-    assert _next_or_same_thursday(input_date) == expected
+# ─────────────────────────────────────────────
+# EXPIRY CALENDAR
+# ─────────────────────────────────────────────
+
+def test_load_expiry_calendar_default_shipped_template():
+    calendar = load_expiry_calendar()
+    assert set(calendar.columns) >= {"expiry_type", "expiry_date", "prior_trading_day"}
+    assert set(calendar["expiry_type"]) <= {"weekly", "monthly"}
+    assert (calendar["prior_trading_day"] < calendar["expiry_date"]).all()
 
 
-def test_last_thursday_of_month():
-    # September 2026: last Thursday is the 24th (verified against a calendar)
-    assert _last_thursday_of_month(2026, 9) == dt.date(2026, 9, 24)
+def test_load_expiry_calendar_missing_file_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_expiry_calendar(tmp_path / "does_not_exist.csv")
 
 
-def test_derive_monthly_hedge_expiry_rolls_when_close():
-    # as_of near the end of the month, close to that month's own last
-    # Thursday -> should roll to next month
-    as_of = dt.date(2026, 9, 20)  # last Thursday of Sept 2026 is the 24th -- only 4 days away
-    result = _derive_monthly_hedge_expiry(as_of, min_days=15)
-    assert result == _last_thursday_of_month(2026, 10)
+def test_load_expiry_calendar_missing_column_raises(tmp_path):
+    bad_path = tmp_path / "bad_calendar.csv"
+    bad_path.write_text("expiry_type,expiry_date\nweekly,2026-09-08\n")
+    with pytest.raises(ValueError):
+        load_expiry_calendar(bad_path)
 
 
-def test_derive_monthly_hedge_expiry_uses_current_month_when_far_enough():
-    as_of = dt.date(2026, 9, 1)  # last Thursday of Sept 2026 is the 24th -- comfortably >15 days away
-    result = _derive_monthly_hedge_expiry(as_of, min_days=15)
-    assert result == _last_thursday_of_month(2026, 9)
+def test_load_expiry_calendar_bad_ordering_raises(tmp_path):
+    """prior_trading_day on/after expiry_date is a data-entry error --
+    should fail loudly rather than silently produce a wrong expiry-eve close."""
+    bad_path = tmp_path / "bad_calendar.csv"
+    bad_path.write_text("expiry_type,expiry_date,prior_trading_day\nweekly,2026-09-08,2026-09-09\n")
+    with pytest.raises(ValueError):
+        load_expiry_calendar(bad_path)
+
+
+def test_load_expiry_calendar_unknown_type_raises(tmp_path):
+    bad_path = tmp_path / "bad_calendar.csv"
+    bad_path.write_text("expiry_type,expiry_date,prior_trading_day\nquarterly,2026-09-08,2026-09-04\n")
+    with pytest.raises(ValueError):
+        load_expiry_calendar(bad_path)
+
+
+def test_get_next_expiry_finds_first_on_or_after():
+    calendar = load_expiry_calendar()
+    expiry, prior = get_next_expiry(calendar, dt.date(2026, 9, 2), "weekly")
+    # per the shipped template: weekly expiries are 9/1, 9/8, 9/15... -- the
+    # first one on/after 9/2 should be 9/8
+    assert expiry == dt.date(2026, 9, 8)
+    assert prior < expiry
+
+
+def test_get_next_expiry_exact_match_on_the_expiry_date_itself():
+    calendar = load_expiry_calendar()
+    expiry, prior = get_next_expiry(calendar, dt.date(2026, 9, 8), "weekly")
+    assert expiry == dt.date(2026, 9, 8)
+
+
+def test_get_next_expiry_beyond_calendar_coverage_raises():
+    calendar = load_expiry_calendar()
+    with pytest.raises(ValueError):
+        get_next_expiry(calendar, dt.date(2030, 1, 1), "weekly")
+
+
+def test_get_prior_trading_day_for_expiry_exact_match():
+    calendar = load_expiry_calendar()
+    prior = get_prior_trading_day_for_expiry(calendar, dt.date(2026, 9, 8), "weekly")
+    assert prior < dt.date(2026, 9, 8)
+
+
+def test_get_prior_trading_day_for_expiry_unknown_date_raises():
+    calendar = load_expiry_calendar()
+    with pytest.raises(ValueError):
+        get_prior_trading_day_for_expiry(calendar, dt.date(2026, 9, 3), "weekly")  # not an expiry date in the template
+
+
+def test_select_monthly_hedge_expiry_from_calendar_rolls_when_close():
+    calendar = load_expiry_calendar()
+    # per the template, Sept 2026 monthly expiry is 2026-09-29
+    as_of = dt.date(2026, 9, 20)  # 9 days out -- should roll to October's monthly expiry
+    expiry, prior = select_monthly_hedge_expiry_from_calendar(calendar, as_of, min_days=15)
+    assert expiry == dt.date(2026, 10, 27)
+
+
+def test_select_monthly_hedge_expiry_from_calendar_uses_current_when_far_enough():
+    calendar = load_expiry_calendar()
+    as_of = dt.date(2026, 9, 1)  # comfortably >15 days from 2026-09-29
+    expiry, prior = select_monthly_hedge_expiry_from_calendar(calendar, as_of, min_days=15)
+    assert expiry == dt.date(2026, 9, 29)
+
+
+def test_select_monthly_hedge_expiry_pure_arithmetic_version_unchanged():
+    """The older pure-date-arithmetic helper (for callers that already
+    resolved both candidate dates themselves) should still work as before."""
+    as_of = dt.date(2026, 9, 20)
+    current_month_expiry = dt.date(2026, 9, 30)  # 10 days away -> too close
+    next_month_expiry = dt.date(2026, 10, 30)
+    assert select_monthly_hedge_expiry(as_of, current_month_expiry, next_month_expiry, min_days=15) == next_month_expiry
 
 
 if __name__ == "__main__":

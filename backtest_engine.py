@@ -59,6 +59,7 @@ class FullBacktestConfig:
     start: dt.datetime
     end: dt.datetime
     weekly_expiry: dt.date
+    weekly_expiry_prior_trading_day: dt.date  # from expiry_utils.get_next_expiry -- NOT derived as weekly_expiry - 1 day
 
     strike_step: int = 100
     bar_freq_minutes: int = 15   # matches the 15-min sold-leg signal cadence
@@ -76,6 +77,7 @@ class FullBacktestConfig:
     # --- hedge straddle (monthly, long) ---
     include_hedge_straddle: bool = False
     monthly_expiry: Optional[dt.date] = None  # required if include_hedge_straddle; resolve via expiry_utils beforehand
+    monthly_expiry_prior_trading_day: Optional[dt.date] = None  # required if include_hedge_straddle; same source as weekly_expiry_prior_trading_day
     hedge_delta_threshold: float = 0.85
 
     # --- directional overlay (weekly spread) ---
@@ -259,6 +261,9 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
         raise ValueError("Empty time grid — check config.start/end fall on weekdays within trading hours.")
     if config.include_hedge_straddle and config.monthly_expiry is None:
         raise ValueError("include_hedge_straddle=True requires config.monthly_expiry to be set.")
+    if config.include_hedge_straddle and config.monthly_expiry_prior_trading_day is None:
+        raise ValueError("include_hedge_straddle=True requires config.monthly_expiry_prior_trading_day to be set "
+                          "(look it up via expiry_utils.get_next_expiry against your expiry calendar).")
 
     trade_pnls: list[float] = []
     action_log: list[str] = []
@@ -387,7 +392,7 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
     # ---- main loop ----
     for as_of in grid:
         # expiry-eve force closes (point 6f) — checked before evaluating strategies
-        if is_expiry_eve_close_bar(as_of, config.weekly_expiry, config.expiry_eve_close_time):
+        if is_expiry_eve_close_bar(as_of, config.weekly_expiry_prior_trading_day, config.expiry_eve_close_time):
             _force_close(positions["sold_straddle"], as_of, provider, trade_pnls, action_log, "weekly expiry eve close")
             closed_for_expiry.add("sold_straddle")
             if config.include_overlay:
@@ -396,7 +401,7 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
             if config.include_otm and config.otm_close_before_expiry:
                 _force_close(positions["otm_position"], as_of, provider, trade_pnls, action_log, "weekly expiry eve close (otm, per config)")
                 closed_for_expiry.add("otm_position")
-        if config.include_hedge_straddle and is_expiry_eve_close_bar(as_of, config.monthly_expiry, config.expiry_eve_close_time):
+        if config.include_hedge_straddle and is_expiry_eve_close_bar(as_of, config.monthly_expiry_prior_trading_day, config.expiry_eve_close_time):
             _force_close(positions["hedge_straddle"], as_of, provider, trade_pnls, action_log, "monthly expiry eve close")
             closed_for_expiry.add("hedge_straddle")
 

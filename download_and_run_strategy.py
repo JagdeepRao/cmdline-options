@@ -18,20 +18,24 @@ Breeze if BREEZE_API_KEY / BREEZE_API_SECRET / BREEZE_SESSION_TOKEN are all
 set, else falls back to the synthetic sample data layer (clearly labeled).
 
 Examples:
-  # Real data, delta-threshold sold straddle only
+  # Real data, delta-threshold sold straddle only (2026-09-08 must exist in expiry_calendar.csv)
   export BREEZE_API_KEY=... BREEZE_API_SECRET=... BREEZE_SESSION_TOKEN=...
-  python3 download_and_run_strategy.py --from-date 2026-09-01 --to-date 2026-09-04 \\
-      --weekly-expiry 2026-09-04 --sold-leg-strategy delta_threshold
+  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+      --weekly-expiry 2026-09-08 --sold-leg-strategy delta_threshold
 
   # Real data, RSI sold straddle + hedge + overlay + 2x OTM
-  python3 download_and_run_strategy.py --from-date 2026-09-01 --to-date 2026-09-04 \\
-      --weekly-expiry 2026-09-04 --sold-leg-strategy rsi_signal \\
-      --include-hedge --monthly-expiry 2026-09-24 \\
+  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+      --weekly-expiry 2026-09-08 --sold-leg-strategy rsi_signal \\
+      --include-hedge --monthly-expiry 2026-09-29 \\
       --include-overlay --overlay-kind rsi \\
       --include-otm --otm-multiplier 2
 
   # No credentials set -> runs against synthetic data automatically
-  python3 download_and_run_strategy.py --from-date 2026-09-01 --to-date 2026-09-04 --weekly-expiry 2026-09-04
+  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 --weekly-expiry 2026-09-08
+
+  # Expiry date not in your calendar yet? Bypass it for one run:
+  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+      --weekly-expiry 2026-09-08 --weekly-expiry-prior-trading-day 2026-09-04
 """
 
 import os
@@ -43,6 +47,7 @@ import pandas as pd
 
 from backtest_engine import FullBacktestConfig, run_full_backtest
 from market_data import BreezeMarketDataProvider
+from expiry_utils import load_expiry_calendar, get_prior_trading_day_for_expiry
 import metrics
 
 OUTPUT_DIR = Path("./downloaded_samples")
@@ -74,8 +79,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--from-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--to-date", required=True, help="YYYY-MM-DD (the weekly expiry date itself is fine -- expiry-eve close fires the day before)")
-    parser.add_argument("--weekly-expiry", required=True, help="YYYY-MM-DD")
+    parser.add_argument("--weekly-expiry", required=True, help="YYYY-MM-DD -- must exist in expiry_calendar.csv unless --weekly-expiry-prior-trading-day is also given")
+    parser.add_argument("--weekly-expiry-prior-trading-day", default=None, help="override the calendar lookup for --weekly-expiry")
     parser.add_argument("--monthly-expiry", default=None, help="YYYY-MM-DD, required with --include-hedge")
+    parser.add_argument("--monthly-expiry-prior-trading-day", default=None, help="override the calendar lookup for --monthly-expiry")
 
     parser.add_argument("--sold-leg-strategy", default="delta_threshold",
                          choices=["delta_threshold", "fixed_move", "rsi_signal", "supertrend_ema_signal"])
@@ -100,12 +107,26 @@ def main():
     weekly_expiry = dt.datetime.strptime(args.weekly_expiry, "%Y-%m-%d").date()
     monthly_expiry = dt.datetime.strptime(args.monthly_expiry, "%Y-%m-%d").date() if args.monthly_expiry else None
 
+    if args.weekly_expiry_prior_trading_day:
+        weekly_prior = dt.datetime.strptime(args.weekly_expiry_prior_trading_day, "%Y-%m-%d").date()
+    else:
+        weekly_prior = get_prior_trading_day_for_expiry(load_expiry_calendar(), weekly_expiry, "weekly")
+
+    monthly_prior = None
+    if monthly_expiry is not None:
+        if args.monthly_expiry_prior_trading_day:
+            monthly_prior = dt.datetime.strptime(args.monthly_expiry_prior_trading_day, "%Y-%m-%d").date()
+        else:
+            monthly_prior = get_prior_trading_day_for_expiry(load_expiry_calendar(), monthly_expiry, "monthly")
+
     provider, is_synthetic = get_provider(args.initial_spot)
 
     config = FullBacktestConfig(
-        start=start, end=end, weekly_expiry=weekly_expiry, bar_freq_minutes=args.bar_freq_minutes,
+        start=start, end=end, weekly_expiry=weekly_expiry, weekly_expiry_prior_trading_day=weekly_prior,
+        bar_freq_minutes=args.bar_freq_minutes,
         sold_leg_strategy_name=args.sold_leg_strategy,
         include_hedge_straddle=args.include_hedge, monthly_expiry=monthly_expiry,
+        monthly_expiry_prior_trading_day=monthly_prior,
         include_overlay=args.include_overlay,
         overlay_hourly_kind=args.overlay_kind, overlay_gating_kind=args.overlay_kind,
         include_otm=args.include_otm, otm_multiplier=args.otm_multiplier,

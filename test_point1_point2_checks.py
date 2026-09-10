@@ -162,14 +162,15 @@ def test_monthly_hedge_expiry_selection():
 
 def test_expiry_eve_close_bar():
     expiry = dt.date(2026, 9, 11)  # Friday, say
-    eve = dt.date(2026, 9, 10)
-    assert not is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 0)), expiry)
-    assert is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 30)), expiry)
-    assert is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 45)), expiry)
-    assert not is_expiry_eve_close_bar(dt.datetime.combine(expiry - dt.timedelta(days=2), dt.time(15, 30)), expiry)
+    eve = dt.date(2026, 9, 10)     # the actual prior trading day, as looked up from a calendar
+    assert not is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 0)), eve)
+    assert is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 30)), eve)
+    assert is_expiry_eve_close_bar(dt.datetime.combine(eve, dt.time(15, 45)), eve)
+    assert not is_expiry_eve_close_bar(dt.datetime.combine(expiry - dt.timedelta(days=2), dt.time(15, 30)), eve)
     assert is_on_or_after_expiry(dt.datetime.combine(expiry, dt.time(9, 15)), expiry)
     assert not is_on_or_after_expiry(dt.datetime.combine(eve, dt.time(15, 45)), expiry)
-    print("PASS: expiry-eve close bar and on-or-after-expiry checks behave as expected")
+    print("PASS: expiry-eve close bar (now keyed to an explicit prior_trading_day, not expiry_date - 1) "
+          "and on-or-after-expiry checks behave as expected")
 
 
 if __name__ == "__main__":
