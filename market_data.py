@@ -12,6 +12,34 @@ import pandas as pd
 from pricing import solve_iv_and_greeks, time_to_expiry_years
 
 
+def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
+    """Proper OHLC resample (open=first, high=max, low=min, close=last,
+    volume=sum), NOT naive row-skipping. Row-skipping (df.iloc[::N]) takes
+    whatever close happens to sit at the FIRST minute of each N-minute
+    window rather than the LAST -- close-only readers (RSI) would get a
+    one-bar-early value, and any high/low information within the skipped
+    minutes is silently discarded rather than folded into a true bar. This
+    matters once real data (with genuine intra-window movement) replaces
+    the synthetic provider's smoother path."""
+    if df.empty or freq_minutes <= 1:
+        return df.reset_index(drop=True)
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.set_index("datetime")
+    agg = {}
+    if "open" in df.columns:
+        agg["open"] = "first"
+    if "high" in df.columns:
+        agg["high"] = "max"
+    if "low" in df.columns:
+        agg["low"] = "min"
+    if "close" in df.columns:
+        agg["close"] = "last"
+    if "volume" in df.columns:
+        agg["volume"] = "sum"
+    return df.resample(f"{freq_minutes}min").agg(agg).dropna(how="all").reset_index()
+
+
 class MarketDataProvider:
     def get_spot(self, as_of: dt.datetime) -> float:
         raise NotImplementedError
@@ -109,14 +137,17 @@ class SyntheticMarketDataProvider(MarketDataProvider):
     def spot_series(self, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
         mask = (self._spot_path["datetime"] >= start) & (self._spot_path["datetime"] <= end)
         result = self._spot_path[mask].reset_index(drop=True)
-        if freq_minutes > 1:
-            result = result.iloc[::freq_minutes].reset_index(drop=True)
-        return result
+        return _resample_ohlc(result, freq_minutes)
 
     def option_price_series(self, strike: float, right: str, expiry: dt.date, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
-        spot_slice = self.spot_series(start, end, freq_minutes)
+        # option prices are computed at every 1-min underlying timestamp
+        # first, THEN resampled -- resampling the underlying and repricing
+        # only at the resampled timestamps would silently discard whatever
+        # intra-window high/low the option itself reached.
+        spot_slice = self.spot_series(start, end, freq_minutes=1)
         prices = [self.get_option_price(strike, right, expiry, ts) for ts in spot_slice["datetime"]]
-        return pd.DataFrame({"datetime": spot_slice["datetime"], "close": prices})
+        raw = pd.DataFrame({"datetime": spot_slice["datetime"], "close": prices})
+        return _resample_ohlc(raw, freq_minutes)
 
 
 class BreezeMarketDataProvider(MarketDataProvider):

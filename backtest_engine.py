@@ -264,6 +264,18 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
     action_log: list[str] = []
     equity_points: list[tuple[dt.datetime, float]] = []
     equity_base = config.initial_capital
+    # Positions force-closed for expiry must NOT be reopened for the rest of
+    # this run -- the engine's scope is a single weekly-expiry cycle, so
+    # there's no valid next contract to roll into. Without this, a strategy
+    # with no memory of "why" a position went flat (RenkoLegTracker and
+    # DirectionalOverlayStrategy's long-leg entry both just check "is a leg
+    # currently open + does my signal want one" -- discovered via
+    # download_and_run_strategy.py showing an OTM/overlay leg reopen in the
+    # SAME bar it was force-closed on expiry eve) would immediately reopen
+    # it on the same about-to-expire contract, defeating the point of the
+    # expiry-eve close entirely.
+    closed_for_expiry: set[str] = set()
+    _already_logged_skip: set[tuple] = set()
 
     positions: dict[str, MultiLegPosition] = {}
     delta_indicators: dict[str, DeltaIndicator] = {}  # SHARED across every strategy that reads deltas
@@ -377,12 +389,16 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
         # expiry-eve force closes (point 6f) — checked before evaluating strategies
         if is_expiry_eve_close_bar(as_of, config.weekly_expiry, config.expiry_eve_close_time):
             _force_close(positions["sold_straddle"], as_of, provider, trade_pnls, action_log, "weekly expiry eve close")
+            closed_for_expiry.add("sold_straddle")
             if config.include_overlay:
                 _force_close(positions["directional_overlay"], as_of, provider, trade_pnls, action_log, "weekly expiry eve close (overlay)")
+                closed_for_expiry.add("directional_overlay")
             if config.include_otm and config.otm_close_before_expiry:
                 _force_close(positions["otm_position"], as_of, provider, trade_pnls, action_log, "weekly expiry eve close (otm, per config)")
+                closed_for_expiry.add("otm_position")
         if config.include_hedge_straddle and is_expiry_eve_close_bar(as_of, config.monthly_expiry, config.expiry_eve_close_time):
             _force_close(positions["hedge_straddle"], as_of, provider, trade_pnls, action_log, "monthly expiry eve close")
+            closed_for_expiry.add("hedge_straddle")
 
         actions: list[Action] = []
         if overlay_strategy is not None:
@@ -397,6 +413,17 @@ def run_full_backtest(provider: MarketDataProvider, config: FullBacktestConfig) 
         for action in actions:
             pos = positions.get(action.position_name)
             if pos is None:
+                continue
+
+            if action.position_name in closed_for_expiry and action.type in (ActionType.OPEN_LEG, ActionType.RECENTER):
+                skip_key = (action.position_name, action.leg_tag)
+                if skip_key not in _already_logged_skip:
+                    _already_logged_skip.add(skip_key)
+                    action_log.append(
+                        f"{as_of}: SKIPPED {action.type.value} on {action.position_name}.{action.leg_tag or '(whole position)'} "
+                        f"-- position was force-closed for expiry this run and will not be reopened (further repeats of "
+                        f"this suppression are not logged individually) — original reason: {action.reason}"
+                    )
                 continue
 
             if action.type == ActionType.CLOSE_LEG:

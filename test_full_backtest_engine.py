@@ -160,7 +160,37 @@ def test_equity_curve_reflects_realized_pnl_even_after_flat():
     )
 
 
-def test_expiry_eve_force_close_actually_closes_positions():
+def test_no_reopen_after_expiry_eve_force_close():
+    """Regression test for the bug found via download_and_run_strategy.py:
+    RenkoLegTracker and DirectionalOverlayStrategy's long-leg entry have no
+    memory of WHY a position went flat -- without an engine-level guard,
+    they would reopen a leg on the same about-to-expire contract in the
+    exact same bar it was force-closed for expiry."""
+    provider = _provider()
+    config = FullBacktestConfig(**_base_kwargs(
+        sold_leg_strategy_name="rsi_signal",
+        include_overlay=True, overlay_hourly_kind="rsi", overlay_gating_kind="rsi",
+        include_otm=True, otm_multiplier=2,
+    ))
+    result = run_full_backtest(provider, config)
+
+    # Once a position appears in a FORCE-CLOSE line, it must never appear in
+    # a bare (non-SKIPPED) OPEN/RECENTER line afterward.
+    force_closed_positions = set()
+    for line in result.action_log:
+        if "FORCE-CLOSE" in line:
+            for pos_name in ("sold_straddle", "hedge_straddle", "directional_overlay", "otm_position"):
+                if f"FORCE-CLOSE {pos_name}." in line:
+                    force_closed_positions.add(pos_name)
+        elif ("OPEN " in line or "RECENTER " in line) and "SKIPPED" not in line:
+            for pos_name in force_closed_positions:
+                if f" {pos_name}." in line:
+                    pytest.fail(f"found a real (non-skipped) open/recenter on {pos_name} after it was force-closed for expiry: {line}")
+
+    assert force_closed_positions, "expected at least sold_straddle to have been force-closed in this run"
+
+
+
     provider = _provider()
     config = FullBacktestConfig(**_base_kwargs(
         sold_leg_strategy_name="delta_threshold",
