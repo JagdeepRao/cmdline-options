@@ -1,21 +1,5 @@
 """
 Market data provider abstraction for the backtest engine.
-
-The engine talks to ONE interface (MarketDataProvider) regardless of where
-the data actually comes from. Two implementations:
-
-  - SyntheticMarketDataProvider: generates a real geometric Brownian motion
-    spot path and derives option prices via genuine Black-Scholes (reusing
-    the already-validated pricing.py module) at a flat IV. This is NOT a
-    realistic market simulation (no skew, no smile, no real order flow) —
-    it exists purely so the ENGINE's mechanics (position tracking, action
-    execution, equity curve construction) can be tested end-to-end with
-    real math behind the numbers, without needing live Breeze credentials.
-
-  - BreezeMarketDataProvider: wraps NiftyOptionsDataBreeze for real
-    historical backtests. Structurally complete but not independently
-    testable from this environment (no live Breeze access) — validate this
-    one against your own account before trusting its output.
 """
 
 from __future__ import annotations
@@ -39,21 +23,13 @@ class MarketDataProvider:
         raise NotImplementedError
 
     def spot_series(self, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
-        """Returns a DataFrame with 'datetime','close' (and ideally
-        'high'/'low') for building indicators over a historical window."""
         raise NotImplementedError
 
     def option_price_series(self, strike: float, right: str, expiry: dt.date, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
-        """Same shape as spot_series, but for one specific option leg —
-        used to build per-leg RSI indicators (strategy 2's per-leg signal)."""
         raise NotImplementedError
 
 
 class SyntheticMarketDataProvider(MarketDataProvider):
-    """GBM spot path + real Black-Scholes option pricing (flat IV, no
-    skew/smile) — for testing the ENGINE, not for realistic strategy
-    evaluation. NIFTY-like defaults: ~12% annualized vol, near-zero drift."""
-
     MARKET_OPEN = dt.time(9, 15)
     MARKET_CLOSE = dt.time(15, 30)
 
@@ -75,13 +51,10 @@ class SyntheticMarketDataProvider(MarketDataProvider):
         self._spot_path = self._generate_path(start, end, initial_spot, annual_vol, annual_drift, seed)
 
     def _trading_minutes(self, start: dt.datetime, end: dt.datetime) -> list[dt.datetime]:
-        """All 1-min timestamps within NSE trading hours, weekdays only —
-        does NOT account for market holidays (a real trading calendar would
-        be needed for that; acceptable gap for engine-testing purposes)."""
         minutes = []
         cursor = start.date()
         while cursor <= end.date():
-            if cursor.weekday() < 5:  # Mon-Fri
+            if cursor.weekday() < 5:
                 day_start = dt.datetime.combine(cursor, self.MARKET_OPEN)
                 day_end = dt.datetime.combine(cursor, self.MARKET_CLOSE)
                 t = max(day_start, start) if cursor == start.date() else day_start
@@ -99,7 +72,7 @@ class SyntheticMarketDataProvider(MarketDataProvider):
             return pd.DataFrame(columns=["datetime", "close", "high", "low"])
 
         rng = np.random.default_rng(seed)
-        dt_years = 1 / (252 * 375)  # one NSE trading minute as a fraction of a trading year
+        dt_years = 1 / (252 * 375)
         drift_term = (annual_drift - 0.5 * annual_vol ** 2) * dt_years
         vol_term = annual_vol * np.sqrt(dt_years)
         shocks = rng.normal(drift_term, vol_term, n)
@@ -147,11 +120,6 @@ class SyntheticMarketDataProvider(MarketDataProvider):
 
 
 class BreezeMarketDataProvider(MarketDataProvider):
-    """Wraps NiftyOptionsDataBreeze for real historical data. Structurally
-    complete but NOT independently testable from this environment — no live
-    Breeze access here. Validate against your real account before trusting
-    engine output built on this provider."""
-
     def __init__(self, breeze_data_layer, r: float = 0.0525, q: float = 0.012):
         self.data = breeze_data_layer
         self.r = r

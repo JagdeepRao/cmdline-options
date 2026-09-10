@@ -154,18 +154,3 @@ def add_greeks_to_option_df(
     )
 
     return pd.concat([merged, results], axis=1)
-
-
-if __name__ == "__main__":
-    # Sanity check using the actual real data point confirmed earlier in this
-    # project — replace the placeholder spot with the real index close at
-    # that exact timestamp once you have it, to get a trustworthy IV.
-    result = solve_iv_and_greeks(
-        price=5.25,
-        spot=24537.0,  # placeholder — pull the real spot at 2026-09-02 11:50 for a trustworthy result
-        strike=24600.0,
-        now=dt.datetime(2026, 9, 2, 11, 50),
-        expiry_date=dt.date(2026, 9, 8),
-        right="Call",
-    )
-    print(result)

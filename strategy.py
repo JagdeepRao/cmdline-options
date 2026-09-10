@@ -359,13 +359,7 @@ class RenkoSuperTrendIndicator(Indicator):
         lower = df["brick_level"] + st_factor * atr_st
 
         def _nz(x: float) -> float:
-            """Replicates Pine's nz(): NaN -> 0. This matters because Python/
-            numpy NaN comparisons always evaluate False, which would silently
-            freeze the loop's 'carry forward previous value' branch forever
-            once any NaN entered final_upper/final_lower (e.g. during the ATR
-            warmup period) — Pine's nz() instead lets the comparison resolve
-            against 0, so the bands correctly initialize the FIRST time the
-            underlying ATR becomes valid, rather than getting stuck."""
+            """Replicates Pine's nz(): NaN -> 0."""
             return 0.0 if pd.isna(x) else x
 
         final_upper = np.full(len(df), np.nan)
@@ -381,9 +375,6 @@ class RenkoSuperTrendIndicator(Indicator):
             prev_trend = trend_dir[i - 1] if i > 0 else 1  # matches Pine's `var int trendDir = 1`
 
             if pd.isna(u) or pd.isna(l):
-                # ATR (and therefore the bands) not yet valid — matches Pine's
-                # na-propagation through arithmetic. Bands stay na; trendDir
-                # still evaluates via nz() fallback, same as Pine would.
                 final_upper[i] = np.nan
                 final_lower[i] = np.nan
             else:
@@ -428,27 +419,7 @@ class RenkoSuperTrendIndicator(Indicator):
 # ─────────────────────────────────────────────
 
 def pine_supertrend(df: pd.DataFrame, factor: float, atr_period: int) -> pd.DataFrame:
-    """Exact replica of Pine's built-in ta.supertrend(factor, atrPeriod).
-    Documented Pine formula:
-        src = hl2
-        atr = ta.atr(atrPeriod)
-        upperBand = src + factor*atr ; lowerBand = src - factor*atr
-        lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
-        upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
-        direction: if na(atr[1]) -> 1
-                   elif prevSuperTrend == prevUpperBand -> (close > upperBand ? -1 : 1)
-                   else -> (close < lowerBand ? 1 : -1)
-        superTrend = direction == -1 ? lowerBand : upperBand
-
-    NOTE the direction convention here is Pine's own, and it's the OPPOSITE
-    of the custom Renko+SuperTrend indicator's convention: here -1 = bullish
-    (uptrend), 1 = bearish (downtrend) — matches the pasted SAR strategy's
-    stBullish = stDir == -1.
-
-    This uses raw hl2 as the band source and standard (non-Renko) ATR —
-    a genuinely different, simpler formula from the custom Renko-emulated
-    version elsewhere in this file, not a variant of it.
-    """
+    """Exact replica of Pine's built-in ta.supertrend(factor, atrPeriod)."""
     high, low, close = df["high"], df["low"], df["close"]
     hl2 = (high + low) / 2
     prev_close = close.shift(1)
@@ -466,15 +437,12 @@ def pine_supertrend(df: pd.DataFrame, factor: float, atr_period: int) -> pd.Data
 
     for i in range(n):
         if pd.isna(atr.iloc[i]):
-            # ATR not yet valid -- bands stay na, matching Pine's na-propagation
             continue
 
         prev_upper = upper_band[i - 1] if i > 0 else np.nan
         prev_lower = lower_band[i - 1] if i > 0 else np.nan
         prev_close_val = close.iloc[i - 1] if i > 0 else np.nan
 
-        # lowerBand: only "loosen" toward the new raw value if it's rising,
-        # or if price closed below the previous lower band (a real breach)
         if pd.isna(prev_lower):
             lower_band[i] = raw_lower.iloc[i]
         else:
@@ -504,15 +472,8 @@ def pine_supertrend(df: pd.DataFrame, factor: float, atr_period: int) -> pd.Data
 
 
 class SupertrendEMAIndicator(Indicator):
-    """Python port of the pasted 'SAR Strategy - Supertrend + EMA' Pine
-    script: standard (non-Renko) ta.supertrend(factor, atrPeriod) combined
-    with a plain ta.ema(src, length), both computed on the SAME price series
-    (pass 15-min data to match your RSI comparison). Entry logic (AND of
-    both conditions), matching the pasted script exactly:
-        buySignal  = (st_dir == -1) and (close > ema)
-        sellSignal = (st_dir ==  1) and (close < ema)
-    Defaults (factor=3.0, atr_period=10) match the pasted script's defaults.
-    """
+    """Standard (non-Renko) ta.supertrend(factor, atrPeriod) combined with
+    a plain ta.ema(src, length), both computed on the same price series."""
     def __init__(self, price_df: pd.DataFrame, ema_len: int = 21, factor: float = 3.0, atr_period: int = 10):
         df = price_df.copy()
         df["datetime"] = pd.to_datetime(df["datetime"])
@@ -534,13 +495,6 @@ class SupertrendEMAIndicator(Indicator):
 
         df["buy_signal"] = st_bullish & ema_bullish
         df["sell_signal"] = st_bearish & ema_bearish
-        # matches the pasted script's `buySignal and not buySignal[1]` edge trigger.
-        # IMPORTANT: .shift(1) introduces a leading NaN into a bool Series, which
-        # silently upcasts it to object dtype — and ~ on object-dtype Python bools
-        # does bitwise NOT on the underlying int (~True==-2, ~False==-1), both
-        # truthy, which would silently break edge detection (it'd just mirror the
-        # original signal). .astype(bool) after fillna forces back to real bool
-        # dtype before negating, avoiding that trap.
         prev_buy = df["buy_signal"].shift(1).fillna(False).astype(bool)
         prev_sell = df["sell_signal"].shift(1).fillna(False).astype(bool)
         df["buy_signal_edge"] = df["buy_signal"] & ~prev_buy
@@ -549,8 +503,6 @@ class SupertrendEMAIndicator(Indicator):
         self.df = df
 
     def value(self, as_of: dt.datetime) -> Optional[str]:
-        """Returns 'buy', 'sell', or None — the sustained state (not just
-        the edge), i.e. whether entry conditions currently hold."""
         eligible = self.df[self.df["datetime"] <= as_of]
         if eligible.empty:
             return None
@@ -562,9 +514,6 @@ class SupertrendEMAIndicator(Indicator):
         return None
 
     def signal_edge(self, as_of: dt.datetime) -> Optional[str]:
-        """Returns 'buy'/'sell' only on the exact bar the condition first
-        becomes true (matches the pasted script's plotshape edge trigger),
-        None otherwise."""
         eligible = self.df[self.df["datetime"] <= as_of]
         if eligible.empty:
             return None
@@ -585,25 +534,30 @@ class AdjustmentStrategy:
 
 
 class DeltaThresholdStrategy(AdjustmentStrategy):
-    """Strategy 1: recenter the whole sold straddle when either leg's |delta|
-    reaches sold_threshold (0.65 default); recenter the whole hedge straddle
-    when either leg's |delta| reaches hedge_threshold (0.85 default).
-    Recenter = close all open legs of that position; the caller reopens
-    fresh legs at the newly-resolved ATM strike."""
+    """Strategy 1: recenter a WHOLE position when any of its legs' |delta|
+    reaches that position's threshold. Defaults cover the two positions
+    from the original spec (sold_straddle @ 0.65, hedge_straddle @ 0.85),
+    but any other whole-position-recenter target (e.g. a directional
+    overlay's short leg, managed 'like the straddle legs' per point 2) can
+    be added via extra_thresholds without a new class."""
 
     def __init__(
         self,
-        delta_indicators: dict[str, DeltaIndicator],  # keyed by leg tag
+        delta_indicators: dict[str, DeltaIndicator],  # keyed by leg tag, across ALL positions this instance watches
         sold_threshold: float = 0.65,
         hedge_threshold: float = 0.85,
+        extra_thresholds: dict[str, float] = None,  # {position_name: threshold} for positions beyond the two defaults
     ):
         self.delta_indicators = delta_indicators
         self.sold_threshold = sold_threshold
         self.hedge_threshold = hedge_threshold
+        self.thresholds = {"sold_straddle": sold_threshold, "hedge_straddle": hedge_threshold}
+        if extra_thresholds:
+            self.thresholds.update(extra_thresholds)
 
     def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
         actions = []
-        for pos_name, threshold in [("sold_straddle", self.sold_threshold), ("hedge_straddle", self.hedge_threshold)]:
+        for pos_name, threshold in self.thresholds.items():
             pos = positions.get(pos_name)
             if pos is None or pos.is_flat():
                 continue
@@ -617,89 +571,208 @@ class DeltaThresholdStrategy(AdjustmentStrategy):
                         type=ActionType.RECENTER, position_name=pos_name,
                         reason=f"{leg.tag} delta {delta:.3f} >= threshold {threshold}",
                     ))
-                    break  # one recenter action covers the whole position
+                    break
         return actions
 
 
-class RSISignalStrategy(AdjustmentStrategy):
-    """Strategy 2: close a sold leg when 15-min RSI (on that leg's OWN
-    option-price series) shows a bullish cross (rising premium = losing
-    money on a short) — re-enter only once that leg's RSI regime turns
-    bearish again (premium trending down = safe to sell). Separately,
-    once a sold leg's delta decays to <= harvest_threshold (0.2 default),
-    close and immediately refresh it at the current ATM strike (no RSI
-    gating — this is profit-harvesting a leg that's stopped contributing
-    meaningful premium, not risk control)."""
+class SoldLegSignalAdapter:
+    """Uniform interface so RSIIndicator and SupertrendEMAIndicator can be
+    swapped interchangeably as the management signal for a SOLD leg — this
+    is what lets you A/B 'RSI crossover' vs 'Supertrend + EMA' on the sold
+    side (point 6/4) without duplicating SoldLegSignalStrategy's logic.
+
+    crossed_bullish(as_of): True on the exact bar the signal first turns
+    against a short (premium starting to rise) — the CLOSE trigger.
+    regime(as_of): 'bullish' / 'bearish' / 'neutral' sustained state — used
+    to gate re-entry (only re-sell once the regime favors selling again).
+    """
+    def crossed_bullish(self, as_of: dt.datetime) -> bool:
+        raise NotImplementedError
+
+    def regime(self, as_of: dt.datetime) -> str:
+        raise NotImplementedError
+
+
+class RSICrossAdapter(SoldLegSignalAdapter):
+    def __init__(self, rsi_indicator: RSIIndicator):
+        self.ind = rsi_indicator
+
+    def crossed_bullish(self, as_of: dt.datetime) -> bool:
+        return self.ind.value(as_of) == RSISignal.BULLISH_CROSS
+
+    def regime(self, as_of: dt.datetime) -> str:
+        return self.ind.regime(as_of)
+
+
+class SupertrendEMAAdapter(SoldLegSignalAdapter):
+    def __init__(self, st_indicator: SupertrendEMAIndicator):
+        self.ind = st_indicator
+
+    def crossed_bullish(self, as_of: dt.datetime) -> bool:
+        return self.ind.signal_edge(as_of) == "buy"
+
+    def regime(self, as_of: dt.datetime) -> str:
+        state = self.ind.value(as_of)
+        if state == "buy":
+            return "bullish"
+        if state == "sell":
+            return "bearish"
+        return "neutral"
+
+
+class SoldLegSignalStrategy(AdjustmentStrategy):
+    """Generalized Strategy 2: closes a SOLD leg when its management signal
+    turns against the short (premium rising), gated by whichever indicator
+    adapter is supplied per leg — RSICrossAdapter or SupertrendEMAAdapter,
+    so the two can be compared head-to-head on identical sold legs. Re-opens
+    only once that leg's signal regime turns bearish again (safe to re-sell).
+    Independently, harvests-and-refreshes any leg whose delta has decayed to
+    <= harvest_delta_threshold (0.2 default), regardless of signal type.
+
+    position_name defaults to 'sold_straddle' but any sold position (e.g.
+    the sold call/put inside a directional overlay spread, point 6d) can be
+    managed by its own instance keyed to that position's leg tags.
+    """
 
     def __init__(
         self,
-        rsi_indicators: dict[str, RSIIndicator],   # keyed by leg tag, 15-min data
+        signal_adapters: dict[str, SoldLegSignalAdapter],
         delta_indicators: dict[str, DeltaIndicator],
         harvest_delta_threshold: float = 0.2,
+        position_name: str = "sold_straddle",
     ):
-        self.rsi_indicators = rsi_indicators
+        self.signal_adapters = signal_adapters
         self.delta_indicators = delta_indicators
         self.harvest_delta_threshold = harvest_delta_threshold
-        self._closed_awaiting_reentry: set[str] = set()  # leg tags closed on RSI signal, awaiting regime flip
+        self.position_name = position_name
+        self._closed_awaiting_reentry: set[str] = set()
 
     def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
         actions = []
-        pos = positions.get("sold_straddle")
+        pos = positions.get(self.position_name)
         if pos is None:
             return actions
 
         for leg in pos.open_legs():
-            rsi_ind = self.rsi_indicators.get(leg.tag)
+            adapter = self.signal_adapters.get(leg.tag)
             delta_ind = self.delta_indicators.get(leg.tag)
 
-            # Rule A: RSI-driven risk close (premium rising against a short)
-            if rsi_ind is not None and rsi_ind.value(as_of) == RSISignal.BULLISH_CROSS:
+            if adapter is not None and adapter.crossed_bullish(as_of):
                 actions.append(Action(
-                    type=ActionType.CLOSE_LEG, position_name="sold_straddle", leg_tag=leg.tag,
-                    reason=f"{leg.tag}: 15-min RSI bullish cross (premium rising against short)",
+                    type=ActionType.CLOSE_LEG, position_name=self.position_name, leg_tag=leg.tag,
+                    reason=f"{leg.tag}: management signal turned against the short (premium rising)",
                 ))
                 self._closed_awaiting_reentry.add(leg.tag)
                 continue
 
-            # Rule B: delta-driven harvest (leg decayed far OTM, refresh it)
             if delta_ind is not None and delta_ind.value(as_of) <= self.harvest_delta_threshold:
                 actions.append(Action(
-                    type=ActionType.RECENTER, position_name="sold_straddle",
+                    type=ActionType.RECENTER, position_name=self.position_name,
                     leg_tag=leg.tag,
                     reason=f"{leg.tag}: delta decayed to <= {self.harvest_delta_threshold}, harvesting and refreshing at ATM",
                 ))
 
-        # Re-entry check for legs closed on Rule A, gated by RSI regime turning bearish again
         for tag in list(self._closed_awaiting_reentry):
-            rsi_ind = self.rsi_indicators.get(tag)
-            if rsi_ind is not None and rsi_ind.regime(as_of) == "bearish":
+            adapter = self.signal_adapters.get(tag)
+            if adapter is not None and adapter.regime(as_of) == "bearish":
                 actions.append(Action(
-                    type=ActionType.OPEN_LEG, position_name="sold_straddle", leg_tag=tag,
-                    reason=f"{tag}: RSI regime turned bearish again, safe to re-sell at current ATM",
+                    type=ActionType.OPEN_LEG, position_name=self.position_name, leg_tag=tag,
+                    reason=f"{tag}: management signal regime turned bearish again, safe to re-sell at current ATM",
                 ))
                 self._closed_awaiting_reentry.discard(tag)
 
         return actions
 
 
-class FixedMoveStrategy(AdjustmentStrategy):
-    """Strategy 3: recenter the sold straddle whenever the underlying has
-    moved move_points OR move_pct (whichever fires first) from the level
-    it was at when the straddle was last established/recentered."""
+class RSISignalStrategy(SoldLegSignalStrategy):
+    """Backward-compatible entry point: same as SoldLegSignalStrategy but
+    takes raw RSIIndicator objects directly (auto-wrapped in RSICrossAdapter)
+    so existing callers (e.g. backtest_engine.py's 'rsi_signal' branch) don't
+    need to change. New code comparing RSI vs Supertrend+EMA should
+    construct SoldLegSignalStrategy directly with the adapter it wants.
 
-    def __init__(self, spot_lookup: Callable[[dt.datetime], float], move_points: float = 100, move_pct: float = 0.5):
+    IMPORTANT for callers doing per-leg indicator rebuilds on recenter
+    (backtest_engine.py does this after every strike change): use
+    `set_leg_indicator(tag, new_rsi_indicator)` rather than mutating
+    `.rsi_indicators[tag]` directly — direct dict mutation would update the
+    raw-indicator bookkeeping dict without re-wrapping it into
+    `.signal_adapters`, which is what `evaluate()` actually reads.
+    """
+
+    def __init__(
+        self,
+        rsi_indicators: dict[str, RSIIndicator],
+        delta_indicators: dict[str, DeltaIndicator],
+        harvest_delta_threshold: float = 0.2,
+        position_name: str = "sold_straddle",
+    ):
+        super().__init__(
+            signal_adapters={tag: RSICrossAdapter(ind) for tag, ind in rsi_indicators.items()},
+            delta_indicators=delta_indicators,
+            harvest_delta_threshold=harvest_delta_threshold,
+            position_name=position_name,
+        )
+        self.rsi_indicators = dict(rsi_indicators)
+
+    def set_leg_indicator(self, tag: str, rsi_indicator: RSIIndicator) -> None:
+        """Rebuild both the raw-indicator bookkeeping and the adapter
+        evaluate() actually reads, for one leg (e.g. after it recenters to
+        a new strike). Prefer this over mutating .rsi_indicators directly."""
+        self.rsi_indicators[tag] = rsi_indicator
+        self.signal_adapters[tag] = RSICrossAdapter(rsi_indicator)
+
+
+class SupertrendEMASoldLegStrategy(SoldLegSignalStrategy):
+    """Same as RSISignalStrategy above, but for the Supertrend+EMA
+    management signal instead of RSI crossover — construct one or the
+    other (same delta-harvest and re-entry-gating behaviour either way) to
+    compare them on identical sold legs."""
+
+    def __init__(
+        self,
+        st_indicators: dict[str, SupertrendEMAIndicator],
+        delta_indicators: dict[str, DeltaIndicator],
+        harvest_delta_threshold: float = 0.2,
+        position_name: str = "sold_straddle",
+    ):
+        super().__init__(
+            signal_adapters={tag: SupertrendEMAAdapter(ind) for tag, ind in st_indicators.items()},
+            delta_indicators=delta_indicators,
+            harvest_delta_threshold=harvest_delta_threshold,
+            position_name=position_name,
+        )
+        self.st_indicators = dict(st_indicators)
+
+    def set_leg_indicator(self, tag: str, st_indicator: SupertrendEMAIndicator) -> None:
+        self.st_indicators[tag] = st_indicator
+        self.signal_adapters[tag] = SupertrendEMAAdapter(st_indicator)
+
+
+class FixedMoveStrategy(AdjustmentStrategy):
+    """Strategy 3: recenter a whole position (sold_straddle by default, but
+    any whole-position-recenter target works, e.g. a directional overlay's
+    short leg) whenever the underlying has moved move_points OR move_pct
+    (whichever fires first) from the level it was at when that position was
+    last established/recentered."""
+
+    def __init__(
+        self,
+        spot_lookup: Callable[[dt.datetime], float],
+        move_points: float = 100,
+        move_pct: float = 0.5,
+        position_name: str = "sold_straddle",
+    ):
         self.spot_lookup = spot_lookup
         self.move_points = move_points
         self.move_pct = move_pct
+        self.position_name = position_name
         self.reference_spot: Optional[float] = None
 
     def set_reference(self, spot: float) -> None:
-        """Call this whenever the sold straddle is (re)established, so the
-        move is measured from the correct baseline."""
         self.reference_spot = spot
 
     def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
-        pos = positions.get("sold_straddle")
+        pos = positions.get(self.position_name)
         if pos is None or pos.is_flat() or self.reference_spot is None:
             return []
 
@@ -709,45 +782,186 @@ class FixedMoveStrategy(AdjustmentStrategy):
 
         if move >= self.move_points or move_pct_actual >= self.move_pct:
             return [Action(
-                type=ActionType.RECENTER, position_name="sold_straddle",
+                type=ActionType.RECENTER, position_name=self.position_name,
                 reason=f"underlying moved {move:.1f}pts ({move_pct_actual:.2f}%) from reference {self.reference_spot}",
             )]
         return []
 
 
-class DirectionalOverlayStrategy(AdjustmentStrategy):
-    """Strategy 4: wraps a core_strategy (any of 1/2/3) for the sold_straddle
-    position, and separately manages a directional 'overlay' position — a
-    long ATM + long 75-delta option, same right, direction set by the 1-hour
-    RSI regime on the underlying. Opens the overlay when flat and a regime
-    is established; closes the whole overlay when the regime flips."""
+def nearest_just_otm_strikes(spot: float, strike_step: int = 100) -> tuple[int, int]:
+    """Nearest OTM call strike (smallest multiple of strike_step strictly
+    above spot) and nearest OTM put strike (largest multiple strictly below).
+    Duplicated here (rather than imported from the data layer) so strategy.py
+    has zero dependency on breeze_connect / the live data layer."""
+    import math
+    call_strike = math.floor(spot / strike_step) * strike_step + strike_step
+    put_strike = math.ceil(spot / strike_step) * strike_step - strike_step
+    return int(call_strike), int(put_strike)
 
-    def __init__(self, core_strategy: AdjustmentStrategy, hourly_rsi: RSIIndicator):
+
+class RenkoLegTracker(AdjustmentStrategy):
+    """One independent OTM leg tracker for a single side ('call' or 'put') —
+    opens its leg when its entry signal fires, closes it when its exit
+    signal fires. Deliberately NOT coupled to the opposite side: nothing
+    here prevents a call tracker and a put tracker from both being open at
+    the same time.
+
+    With both trackers currently reading the SAME underlying Renko trend
+    (desired_trend=1 for call, -1 for put), only one side's condition can
+    be true at once in practice, so you'll observe single-leg-at-a-time
+    behavior today. That's a property of what's fed in, not something this
+    class enforces — point this at two independent signals later (e.g. a
+    Renko computed on that leg's own option price, or any other
+    per-leg-specific read) and overlapping call+put legs falls out with
+    zero changes here.
+
+    DELIBERATELY OUT OF SCOPE FOR NOW (per your last message): pyramiding
+    further same-side entries as the underlying keeps moving and the
+    'just OTM' strike rolls further away (e.g. adding a second, further-OTM
+    put as the market keeps dropping). This tracker holds at most one leg
+    per side; layering multiple concurrent same-side legs is a real
+    extension (raises questions like whether an exit signal closes all of
+    them at once or oldest-first) worth deciding deliberately rather than
+    bolting on here.
+    """
+
+    def __init__(
+        self,
+        renko_indicator: RenkoSuperTrendIndicator,
+        right: str,  # 'call' or 'put'
+        position_name: str = "otm_position",
+    ):
+        self.renko_indicator = renko_indicator
+        self.right = right
+        self.leg_tag = f"otm_{right}"
+        self.position_name = position_name
+        self.desired_trend = 1 if right == "call" else -1
+
+    def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
+        trend = self.renko_indicator.value(as_of)
+        pos = positions.get(self.position_name)
+        leg_open = pos is not None and pos.get_leg(self.leg_tag) is not None
+
+        if not leg_open and trend == self.desired_trend:
+            direction_word = "bullish" if self.desired_trend == 1 else "bearish"
+            return [Action(
+                type=ActionType.OPEN_LEG, position_name=self.position_name, leg_tag=self.leg_tag,
+                reason=f"Renko trend turned {direction_word} — entering just-OTM {self.right}",
+            )]
+
+        if leg_open and trend != self.desired_trend:
+            return [Action(
+                type=ActionType.CLOSE_LEG, position_name=self.position_name, leg_tag=self.leg_tag,
+                reason=f"Renko trend left the {self.right} side — exiting just-OTM {self.right}",
+            )]
+
+        return []
+
+
+class RenkoOpportunisticOTMStrategy(AdjustmentStrategy):
+    """Composes one RenkoLegTracker per side (call, put) against a single
+    'otm_position' — the entry point backtest_engine.py wires up. Each side
+    enters/exits independently per RenkoLegTracker's own signal; this class
+    just runs both and merges their actions, so it holds whatever
+    combination of legs (zero, call-only, put-only, or eventually both) the
+    two trackers independently decide on.
+
+    Sizing (lot_size * otm_multiplier) is decided by the caller when it
+    actually opens a leg from an OPEN_LEG action — this strategy only ever
+    decides direction/timing, so the same class serves every point on the
+    1x-5x sizing sweep.
+    """
+
+    def __init__(
+        self,
+        renko_indicator: RenkoSuperTrendIndicator,
+        position_name: str = "otm_position",
+    ):
+        self.call_tracker = RenkoLegTracker(renko_indicator, "call", position_name)
+        self.put_tracker = RenkoLegTracker(renko_indicator, "put", position_name)
+
+    def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
+        return self.call_tracker.evaluate(positions, as_of) + self.put_tracker.evaluate(positions, as_of)
+
+
+class DirectionalOverlayStrategy(AdjustmentStrategy):
+    """Strategy 4 / point 2: wraps a core_strategy (any of 1/2/3, or a
+    SoldLegSignalStrategy) for the sold_straddle position, and separately
+    manages a directional 'directional_overlay' position — a long 75-delta
+    call/put plus a short ATM call/put on the same side (the short leg
+    hedges/finances the long leg, per your description).
+
+    Direction comes from a 1hr regime signal on the underlying (an
+    RSICrossAdapter or SupertrendEMAAdapter built on 1hr data — reused here
+    since both already expose the same regime() interface used elsewhere).
+    On a flip, EVERY currently-open leg of the overlay (long and/or short,
+    whichever exist) is closed, and a fresh long 75-delta leg opens
+    immediately in the new direction.
+
+    The short ATM leg is NOT opened alongside the long leg automatically —
+    it's entered only once short_leg_strategy's own signal says selling is
+    safe (the same 15-min gating logic used for sold_straddle's re-entries),
+    then managed exactly like a sold_straddle leg from then on (close on
+    adverse cross, harvest at delta<=0.2, re-enter once safe again). This
+    class achieves that by registering the new direction's short-leg tag
+    into short_leg_strategy's own re-entry-awaiting set — reusing that
+    machinery rather than duplicating the gating logic here.
+
+    CONFIRMED (not an open assumption): the long 75-delta leg runs
+    unhedged for however long the 15-min signal takes to permit selling the
+    ATM leg — this is the intended behavior, verified against the actual
+    requirement. One consequence to keep in mind when reading results: if
+    the 1hr regime flips again before the 15-min signal ever turns
+    favorable, that cycle's spread will have run long-only for its entire
+    life, with the short leg never entered at all.
+    """
+
+    def __init__(
+        self,
+        core_strategy: AdjustmentStrategy,
+        hourly_regime_signal: SoldLegSignalAdapter,  # built on 1hr underlying data
+        short_leg_strategy: SoldLegSignalStrategy,   # pre-built, position_name="directional_overlay"
+        position_name: str = "directional_overlay",
+    ):
         self.core_strategy = core_strategy
-        self.hourly_rsi = hourly_rsi
-        self.current_overlay_direction: Optional[str] = None  # 'call' or 'put'
+        self.hourly_regime_signal = hourly_regime_signal
+        self.short_leg_strategy = short_leg_strategy
+        self.position_name = position_name
+        self.current_direction: Optional[str] = None  # 'call' / 'put' / None
 
     def evaluate(self, positions: dict[str, MultiLegPosition], as_of: dt.datetime) -> list[Action]:
         actions = self.core_strategy.evaluate(positions, as_of)
 
-        regime = self.hourly_rsi.regime(as_of)  # 'bullish' / 'bearish' / 'neutral'
-        desired_direction = "call" if regime == "bullish" else "put" if regime == "bearish" else None
+        regime = self.hourly_regime_signal.regime(as_of)
+        desired = "call" if regime == "bullish" else "put" if regime == "bearish" else None
 
-        overlay = positions.get("directional_overlay")
-        overlay_open = overlay is not None and not overlay.is_flat()
+        pos = positions.get(self.position_name)
+        pos_open = pos is not None and not pos.is_flat()
 
-        if overlay_open and self.current_overlay_direction is not None and desired_direction != self.current_overlay_direction:
+        if pos_open and self.current_direction is not None and desired != self.current_direction:
+            for leg in pos.open_legs():
+                actions.append(Action(
+                    type=ActionType.CLOSE_LEG, position_name=self.position_name, leg_tag=leg.tag,
+                    reason=f"1hr regime flipped from {self.current_direction} to {desired or 'neutral'} — closing overlay leg {leg.tag}",
+                ))
+            # clear any pending gated-entry state for the side we're leaving
+            self.short_leg_strategy._closed_awaiting_reentry.discard(f"overlay_short_{self.current_direction}")
+            self.current_direction = None
+            pos_open = False
+
+        if not pos_open and desired is not None:
+            long_tag = f"overlay_long_{desired}"
             actions.append(Action(
-                type=ActionType.RECENTER, position_name="directional_overlay",
-                reason=f"1hr RSI regime flipped from {self.current_overlay_direction} to {desired_direction}, closing overlay",
+                type=ActionType.OPEN_LEG, position_name=self.position_name, leg_tag=long_tag,
+                reason=f"1hr regime turned {regime} — opening long 75-delta {desired}",
             ))
-            self.current_overlay_direction = None
+            self.current_direction = desired
+            # register the short leg as "awaiting reentry" so short_leg_strategy
+            # opens it the moment its own 15-min signal says selling is safe,
+            # rather than opening it unconditionally right now
+            self.short_leg_strategy._closed_awaiting_reentry.add(f"overlay_short_{desired}")
 
-        elif not overlay_open and desired_direction is not None:
-            actions.append(Action(
-                type=ActionType.OPEN_LEG, position_name="directional_overlay",
-                reason=f"1hr RSI regime is {regime}, opening {desired_direction} overlay (ATM + 75-delta)",
-            ))
-            self.current_overlay_direction = desired_direction
+        if self.current_direction is not None:
+            actions.extend(self.short_leg_strategy.evaluate(positions, as_of))
 
         return actions
