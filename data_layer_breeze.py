@@ -13,16 +13,19 @@ CONFIRMED by inspecting the installed breeze-connect SDK source directly
     is the method used here — it's more permissive than v1 (explicitly
     supports product_type="cash" for the index, and more exchange codes)
   - VALID INTERVALS ARE ONLY: "1second" (v2 only), "1minute", "5minute",
-    "30minute", "1day". THERE IS NO NATIVE "15minute" INTERVAL. Your
-    RSI+ADX leg (specced at 15-min) needs to fetch "5minute" data and be
-    resampled to 15-min locally — see resample_to_15min() below.
+    "30minute", "1day". THERE IS NO NATIVE "15minute" (or other arbitrary)
+    INTERVAL. This layer therefore always fetches at native "1minute" and
+    lets market_data.BreezeMarketDataProvider combine bars into whatever
+    timeframe a strategy needs (15-min sold-leg signal, 1hr overlay
+    direction, etc.) via the shared _resample_ohlc() helper — see
+    market_data.py, not this file, for that logic.
 
 CONFIRMED FIELD NAMES — verified against a real successful pull (2026-09),
 full column list: close, datetime, exchange_code, expiry_date, high, low,
 open, open_interest, product_type, right, stock_code, strike_price, volume.
-resample_to_15min() below uses the confirmed OHLCV names. open_interest is
-available but not currently used anywhere — worth pulling into the position/
-liquidity logic later (e.g. skip strikes with thin OI) if useful.
+open_interest is available but not currently used anywhere — worth pulling
+into the position/liquidity logic later (e.g. skip strikes with thin OI)
+if useful.
 
 NOT independently confirmed (no live network access to verify from here):
   - Exact max date-range-per-call Breeze enforces (CHUNK_DAYS below is a
@@ -74,35 +77,6 @@ def _breeze_date(d, time_of_day: dt.time = None) -> str:
     if isinstance(d, dt.date) and not isinstance(d, dt.datetime):
         d = dt.datetime.combine(d, time_of_day or dt.time(7, 0, 0))
     return d.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-
-def resample_to_15min(df: pd.DataFrame, timestamp_col: str = "datetime") -> pd.DataFrame:
-    """Breeze has no native 15-minute interval — fetch '5minute' data and
-    resample it to 15-min bars here for the RSI+ADX leg.
-
-    timestamp_col default ("datetime") confirmed correct against a real
-    Breeze pull. OHLC/volume columns are also confirmed lowercase
-    (close/high/low/open/volume).
-    """
-    if df.empty:
-        return df
-    df = df.copy()
-    df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-    df = df.set_index(timestamp_col)
-
-    ohlc_agg = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-    }
-    # only aggregate columns that actually exist in the response
-    agg = {k: v for k, v in ohlc_agg.items() if k in df.columns}
-    if "volume" in df.columns:
-        agg["volume"] = "sum"
-
-    resampled = df.resample("15min").agg(agg).dropna(how="all").reset_index()
-    return resampled
 
 
 class NiftyOptionsDataBreeze:

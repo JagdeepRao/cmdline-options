@@ -13,9 +13,9 @@ import os
 import datetime as dt
 
 from data_layer_breeze import NiftyOptionsDataBreeze
-API_KEY = os.environ.get("BREEZE_API_KEY", "y65381Uf4G298til8!l712891x5361e9")
-API_SECRET = os.environ.get("BREEZE_API_SECRET", "y65381Uf4G298til8!l712891x5361e9")
-SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "56948362")
+API_KEY = os.environ.get("BREEZE_API_KEY", "")
+API_SECRET = os.environ.get("BREEZE_API_SECRET", "")
+SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "")
 
 
 if not (API_KEY and API_SECRET and SESSION_TOKEN):

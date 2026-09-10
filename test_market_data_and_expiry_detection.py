@@ -14,7 +14,8 @@ import warnings
 import pandas as pd
 import pytest
 
-from market_data import _resample_ohlc, SyntheticMarketDataProvider
+from market_data import _resample_ohlc, SyntheticMarketDataProvider, BreezeMarketDataProvider
+from data_layer_sample import NiftyOptionsDataSample
 from expiry_utils import (
     load_expiry_calendar, get_next_expiry, get_prior_trading_day_for_expiry,
     select_monthly_hedge_expiry_from_calendar, select_monthly_hedge_expiry,
@@ -61,6 +62,56 @@ def test_synthetic_provider_option_price_series_uses_proper_resample():
     first_bin_1min_closes = series_1min[series_1min["datetime"] <= start + dt.timedelta(minutes=14)]["close"]
     last_close_in_first_bin = first_bin_1min_closes.iloc[-1]
     assert abs(series_15min.iloc[0]["close"] - last_close_in_first_bin) < 1e-9
+
+
+def test_breeze_provider_spot_series_uses_proper_resample_not_row_skip(tmp_path):
+    """Regression test: BreezeMarketDataProvider.spot_series() previously
+    used naive row-skipping (df.iloc[::freq_minutes]) instead of the fixed
+    _resample_ohlc() that SyntheticMarketDataProvider already used -- the
+    exact bug test_resample_ohlc_takes_last_close_not_first documents was
+    still live on the real-data code path. Uses the credential-free sample
+    data layer (same public interface as the real Breeze layer) so this
+    runs without a live Breeze session."""
+    data_layer = NiftyOptionsDataSample(cache_dir=tmp_path, index_start_price=24500.0)
+    provider = BreezeMarketDataProvider(data_layer)
+
+    start = dt.datetime(2026, 9, 1, 9, 15)
+    end = dt.datetime(2026, 9, 1, 11, 0)
+
+    series_1min = provider.spot_series(start, end, freq_minutes=1)
+    series_15min = provider.spot_series(start, end, freq_minutes=15)
+    naive_skip = series_1min.iloc[::15].reset_index(drop=True)
+
+    assert len(series_15min) < len(series_1min)
+    # a proper resample's close for the first 15-min bin is the LAST close
+    # in that bin, not whatever naive row-skipping would grab (the first)
+    first_bin_closes = series_1min[series_1min["datetime"] <= start + dt.timedelta(minutes=14)]["close"]
+    expected_close = first_bin_closes.iloc[-1]
+    assert abs(series_15min.iloc[0]["close"] - expected_close) < 1e-9
+    if not naive_skip.empty:
+        assert series_15min.iloc[0]["close"] != naive_skip.iloc[0]["close"] or expected_close == naive_skip.iloc[0]["close"], (
+            "this only confirms something if proper resampling and naive skipping actually disagree here"
+        )
+
+
+def test_breeze_provider_option_price_series_uses_proper_resample(tmp_path):
+    """Same regression, for option_price_series() -- feeds the 15-min
+    sold-leg signal and 1hr overlay-direction signal, so a wrong close here
+    directly corrupts strategy decisions against real data."""
+    data_layer = NiftyOptionsDataSample(cache_dir=tmp_path, index_start_price=24500.0)
+    provider = BreezeMarketDataProvider(data_layer)
+
+    start = dt.datetime(2026, 9, 1, 9, 15)
+    end = dt.datetime(2026, 9, 1, 11, 0)
+    expiry = dt.date(2026, 9, 4)
+
+    series_1min = provider.option_price_series(24500, "call", expiry, start, end, freq_minutes=1)
+    series_15min = provider.option_price_series(24500, "call", expiry, start, end, freq_minutes=15)
+
+    assert len(series_15min) < len(series_1min)
+    first_bin_closes = series_1min[series_1min["datetime"] <= start + dt.timedelta(minutes=14)]["close"]
+    expected_close = first_bin_closes.iloc[-1]
+    assert abs(series_15min.iloc[0]["close"] - expected_close) < 1e-9
 
 
 # ─────────────────────────────────────────────

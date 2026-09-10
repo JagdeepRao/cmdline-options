@@ -180,19 +180,26 @@ class BreezeMarketDataProvider(MarketDataProvider):
         return int(result["strike"])
 
     def spot_series(self, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
+        # Always fetch at native 1-minute resolution and combine into proper
+        # OHLC bars locally -- matches SyntheticMarketDataProvider's behavior
+        # (see _resample_ohlc's docstring for why naive row-skipping is wrong:
+        # it takes whichever close sits at the FIRST minute of each window
+        # rather than the LAST, and silently discards intra-window high/low).
+        # This previously used df.iloc[::freq_minutes], the exact bug that was
+        # fixed for the synthetic provider but never carried over here.
         df = self.data.get_index_historical(start.date(), end.date(), interval="1minute")
         df["datetime"] = pd.to_datetime(df["datetime"])
         mask = (df["datetime"] >= start) & (df["datetime"] <= end)
         result = df[mask].reset_index(drop=True)
-        if freq_minutes > 1:
-            result = result.iloc[::freq_minutes].reset_index(drop=True)
-        return result
+        return _resample_ohlc(result, freq_minutes)
 
     def option_price_series(self, strike: float, right: str, expiry: dt.date, start: dt.datetime, end: dt.datetime, freq_minutes: int = 1) -> pd.DataFrame:
+        # Same fix as spot_series above -- fetch native 1-minute option bars,
+        # then combine into a proper OHLC bar at whatever timeframe the
+        # caller needs (15-min sold-leg signal, 1hr overlay direction, etc.)
+        # rather than sampling a single minute out of each window.
         df = self.data.get_option_historical(expiry, int(strike), right.lower(), start.date(), end.date(), interval="1minute")
         df["datetime"] = pd.to_datetime(df["datetime"])
         mask = (df["datetime"] >= start) & (df["datetime"] <= end)
         result = df[mask].reset_index(drop=True)
-        if freq_minutes > 1:
-            result = result.iloc[::freq_minutes].reset_index(drop=True)
-        return result
+        return _resample_ohlc(result, freq_minutes)
