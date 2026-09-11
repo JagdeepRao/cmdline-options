@@ -28,11 +28,12 @@ BreezeMarketDataProvider, or any script's data-source selection (see
 data_sources.resolve_data_layer).
 """
 
-import math
 import datetime as dt
 from pathlib import Path
 
 import pandas as pd
+
+from .data_layer_base import BaseCachedOptionsDataLayer
 
 DEFAULT_CACHE_DIR = Path(__file__).parent.parent / "real_data_cache"
 
@@ -44,20 +45,20 @@ class CachedDataUnavailable(Exception):
     whether to widen the request or go pull more data with live credentials."""
 
 
-class NiftyOptionsDataCached:
+class NiftyOptionsDataCached(BaseCachedOptionsDataLayer):
+    """find_atm_strike / nearest_otm_strikes / get_straddle_and_hedge_data
+    are inherited unchanged from BaseCachedOptionsDataLayer -- this class
+    only implements the two raw data-access methods, using a store that
+    NEVER fetches: any key not already committed under cache_dir raises
+    CachedDataUnavailable immediately (see module docstring)."""
+
     def __init__(self, cache_dir: Path = DEFAULT_CACHE_DIR):
-        self.cache_dir = Path(cache_dir)
+        super().__init__(cache_dir)
         if not self.cache_dir.exists():
             raise FileNotFoundError(
                 f"No cached data directory at {self.cache_dir} -- see "
                 f"real_data_cache/README.md for how to populate and commit one."
             )
-
-    @staticmethod
-    def nearest_otm_strikes(spot: float, strike_step: int = 100) -> tuple[int, int]:
-        call_strike = math.floor(spot / strike_step) * strike_step + strike_step
-        put_strike = math.ceil(spot / strike_step) * strike_step - strike_step
-        return int(call_strike), int(put_strike)
 
     def _read_slice(self, cache_key: str, from_date: dt.date, to_date: dt.date) -> pd.DataFrame:
         cache_path = self.cache_dir / f"{cache_key}.parquet"
@@ -104,68 +105,9 @@ class NiftyOptionsDataCached:
         cache_key = f"NIFTY_INDEX_{interval}"
         return self._read_slice(cache_key, from_date, to_date)
 
-    def find_atm_strike(
-        self,
-        expiry: dt.date,
-        approx_spot: float,
-        as_of: dt.datetime,
-        strike_step: int = 100,
-        strike_range: int = 5,
-    ) -> dict:
-        """Same put-call-parity ATM resolution as the live/sample layers,
-        but every candidate strike that isn't in the committed cache is
-        silently skipped (not treated as a hard failure) -- you may well
-        have committed data for only a handful of strikes near the money,
-        which is exactly the realistic "curated real snapshot" use case."""
-        center = round(approx_spot / strike_step) * strike_step
-        candidates = []
-        window_start = as_of - dt.timedelta(minutes=5)
-        window_end = as_of + dt.timedelta(minutes=5)
-
-        for i in range(-strike_range, strike_range + 1):
-            strike = center + i * strike_step
-            try:
-                call_df = self.get_option_historical(expiry, strike, "call", window_start.date(), window_end.date())
-                put_df = self.get_option_historical(expiry, strike, "put", window_start.date(), window_end.date())
-            except CachedDataUnavailable:
-                continue
-            if call_df.empty or put_df.empty:
-                continue
-
-            call_df["datetime"] = pd.to_datetime(call_df["datetime"])
-            put_df["datetime"] = pd.to_datetime(put_df["datetime"])
-            call_idx = (call_df["datetime"] - as_of).abs().idxmin()
-            put_idx = (put_df["datetime"] - as_of).abs().idxmin()
-            call_price = float(call_df.loc[call_idx, "close"])
-            put_price = float(put_df.loc[put_idx, "close"])
-            candidates.append({
-                "strike": strike, "call_price": call_price, "put_price": put_price,
-                "diff": abs(call_price - put_price),
-            })
-
-        if not candidates:
-            raise CachedDataUnavailable(
-                f"No committed call/put data for expiry={expiry} within {strike_range} "
-                f"strikes of {center} around {as_of} -- commit more strikes for this "
-                f"expiry/date if you need ATM resolution here."
-            )
-
-        best = min(candidates, key=lambda c: c["diff"])
-        return {**best, "candidates": candidates}
-
-    def get_straddle_and_hedge_data(
-        self,
-        expiry: dt.date,
-        spot_at_entry: float,
-        from_date: dt.date,
-        to_date: dt.date,
-        interval: str = "1minute",
-    ) -> dict:
-        atm_strike = round(spot_at_entry / 100) * 100
-        otm_call_strike, otm_put_strike = self.nearest_otm_strikes(spot_at_entry)
-        return {
-            "straddle_call": self.get_option_historical(expiry, atm_strike, "call", from_date, to_date, interval),
-            "straddle_put": self.get_option_historical(expiry, atm_strike, "put", from_date, to_date, interval),
-            "hedge_call": self.get_option_historical(expiry, otm_call_strike, "call", from_date, to_date, interval),
-            "hedge_put": self.get_option_historical(expiry, otm_put_strike, "put", from_date, to_date, interval),
-        }
+    # find_atm_strike, nearest_otm_strikes, get_straddle_and_hedge_data are
+    # inherited from BaseCachedOptionsDataLayer unchanged. The base's
+    # find_atm_strike catches a broad `Exception` around each candidate
+    # strike lookup (see its docstring), so CachedDataUnavailable raised by
+    # get_option_historical above is already treated as "skip this
+    # candidate" with zero cached-layer-specific code needed here.
