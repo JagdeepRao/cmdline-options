@@ -17,9 +17,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+live = ["kiteconnect"]
 
 [tool.setuptools.packages.find]
-include = ["nifty_backtester*"]
+include = ["nifty_backtester*", "nifty_live*"]
 
 [tool.setuptools.package-data]
 nifty_backtester = ["expiry_calendar.csv"]

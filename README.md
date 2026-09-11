@@ -95,3 +95,38 @@ Every script's own `--help` / docstring has the full option list and examples.
 | `debug_breeze.py` | Minimal raw-response diagnostic for a live Breeze session — run this FIRST against a real account |
 | `run_real_greeks.py` | Pulls one real option leg + matching spot and computes real IV/Greeks |
 | `verify_find_atm.py` | Manual verification of `find_atm_strike()` against a real account (not a pytest test — see Tests above) |
+
+## Live monitoring (`nifty_live/`, in progress)
+
+A separate package, built on the exact same `Leg`/`MultiLegPosition`/
+`AdjustmentStrategy` classes as the backtester (zero changes to
+`strategy.py` needed) — the backtester stays batch/offline; `nifty_live`
+tracks currently-held positions and (eventually) reacts to live Breeze
+ticks the same way `backtest_engine.py` reacts to historical bars.
+
+**Phase 3 (current): `PositionStore`.** Seeds position state one of two
+ways, both producing the identical JSON schema:
+- **Manually** — hand-author a JSON file (schema documented in
+  `nifty_live/position_store.py`'s `PositionStore` docstring) for whatever
+  you're currently holding.
+- **From Zerodha** — `PositionStore.import_from_zerodha()` reads currently
+  open positions via `kiteconnect` (read-only; Zerodha's free tier gives
+  no live price feed, so it's never used for anything but "what do I
+  hold" — Breeze remains the sole price source everywhere, live and
+  historical alike). Every field name and sign convention this relies on
+  was cross-checked against Zerodha's own docs/SDK/forum — see the module
+  docstring for specifics — but **run
+  `python3 scripts/verify_zerodha_import.py` against your real account
+  before trusting it with real capital**; it prints the raw
+  `positions()`/`instruments()` responses alongside what gets derived
+  from them, the same pattern as `verify_find_atm.py`/`debug_breeze.py`
+  for the Breeze side.
+
+Install the optional `kiteconnect` dependency with
+`pip install -e ".[live]" --break-system-packages` (kept separate from the
+core install so backtesting-only usage never needs it).
+
+Remaining phases: `chain_downloader` (periodic full-chain snapshots),
+`ReplayLiveFeed`/`live_engine` (runs the same `AdjustmentStrategy.evaluate()`
+against replayed or live bars), `BreezeWebSocketFeed`, then webapp
+integration.
