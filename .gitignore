@@ -4,3 +4,7 @@ __pycache__/
 data_cache/
 sample_data_cache/
 downloaded_samples/
+*.egg-info/
+build/
+dist/
+logs/

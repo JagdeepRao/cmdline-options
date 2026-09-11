@@ -25,8 +25,8 @@ from functools import partial
 
 import pandas as pd
 
-from data_cache import DataCache
-from sample_data import generate_index_bars, generate_option_bars
+from .data_cache import DataCache
+from .sample_data import generate_index_bars, generate_option_bars
 
 SAMPLE_CACHE_DIR = Path("./sample_data_cache")
 

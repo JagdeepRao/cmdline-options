@@ -7,59 +7,50 @@ judge for yourself whether it "looks right." This is indicator-level
 validation; see download_and_run_strategy.py for the equivalent at the
 strategy/adjustment level.
 
-DATA SOURCE: uses live ICICI Breeze if BREEZE_API_KEY, BREEZE_API_SECRET,
-and BREEZE_SESSION_TOKEN are all set as environment variables (same
-convention as test_find_atm.py / run_real_greeks.py). Falls back to the
-SYNTHETIC sample data layer otherwise, clearly labeled as such in both the
-console output and the output filename -- this exists so you (or anyone
-without live credentials yet) can confirm the script itself works before
-pointing it at a real account.
+DATA SOURCE (--data-source, default "auto" -- see nifty_backtester.data_sources):
+  auto      -> LIVE Breeze if BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN
+               are all set; else CACHED (real_data_cache/*.parquet, committed real
+               data, no live session needed) if any is committed; else SYNTHETIC.
+  breeze    -> force LIVE (errors if credentials aren't set).
+  cached    -> force CACHED (errors if real_data_cache/ has nothing committed).
+  synthetic -> force SYNTHETIC.
+Every run's console output and output filename are tagged with which of
+LIVE/CACHED/SYNTHETIC was actually used, so results are never ambiguous
+after the fact.
 
-Examples:
+Examples (run from the repo root):
   # Real option leg, RSI + Supertrend+EMA on 15-min data
   export BREEZE_API_KEY=... BREEZE_API_SECRET=... BREEZE_SESSION_TOKEN=...
-  python3 download_option_data.py --option --strike 24800 --right call \\
+  python3 scripts/download_option_data.py --option --strike 24800 --right call \\
       --expiry 2026-09-11 --from-date 2026-09-01 --to-date 2026-09-10 \\
       --resample-minutes 15 --kind rsi,supertrend_ema
 
   # Real NIFTY index, Renko+SuperTrend on native 1-min data
-  python3 download_option_data.py --index --from-date 2026-09-01 \\
+  python3 scripts/download_option_data.py --index --from-date 2026-09-01 \\
       --to-date 2026-09-10 --kind renko
 
-  # No credentials set -> runs against synthetic data automatically
-  python3 download_option_data.py --index --from-date 2026-09-01 --to-date 2026-09-03 --kind all
+  # No credentials, but real_data_cache/ has committed data for this range ->
+  # runs against real data with zero live-session setup
+  python3 scripts/download_option_data.py --index --from-date 2026-09-01 \\
+      --to-date 2026-09-03 --kind all --data-source cached
+
+  # No credentials, nothing committed -> runs against synthetic data automatically
+  python3 scripts/download_option_data.py --index --from-date 2026-09-01 --to-date 2026-09-03 --kind all
 """
 
-import os
 import argparse
 import datetime as dt
 from pathlib import Path
 
 import pandas as pd
 
-from strategy import RSIIndicator, SupertrendEMAIndicator, RenkoSuperTrendIndicator
+from nifty_backtester.strategy import RSIIndicator, SupertrendEMAIndicator, RenkoSuperTrendIndicator
+from nifty_backtester.data_sources import resolve_data_layer, VALID_SOURCES
 
 OUTPUT_DIR = Path("./downloaded_samples")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 NATIVE_INTERVAL_MINUTES = {"1minute": 1, "5minute": 5, "30minute": 30, "1day": 1440}
-
-
-def get_data_layer():
-    """Real Breeze layer if credentials are set, else the synthetic
-    fallback -- returns (layer, is_synthetic)."""
-    api_key = os.environ.get("BREEZE_API_KEY")
-    api_secret = os.environ.get("BREEZE_API_SECRET")
-    session_token = os.environ.get("BREEZE_SESSION_TOKEN")
-    if api_key and api_secret and session_token:
-        from data_layer_breeze import NiftyOptionsDataBreeze
-        print("Using LIVE Breeze data.")
-        return NiftyOptionsDataBreeze(api_key, api_secret, session_token), False
-    from data_layer_sample import NiftyOptionsDataSample
-    print("BREEZE_API_KEY / BREEZE_API_SECRET / BREEZE_SESSION_TOKEN not all set "
-          "-- falling back to SYNTHETIC sample data. Set those three env vars "
-          "to validate against real Breeze data instead.")
-    return NiftyOptionsDataSample(), True
 
 
 def _resample(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
@@ -134,6 +125,9 @@ def main():
     parser.add_argument("--kind", default="all",
                          help="comma-separated: rsi,supertrend_ema,renko or 'all'")
     parser.add_argument("--out", default=None, help="output CSV path (default: auto-named under ./downloaded_samples/)")
+    parser.add_argument("--data-source", default="auto", choices=VALID_SOURCES,
+                         help="auto (default) picks LIVE > CACHED > SYNTHETIC; see this script's docstring")
+    parser.add_argument("--initial-spot", type=float, default=24500.0, help="only affects the SYNTHETIC fallback")
 
     args = parser.parse_args()
 
@@ -148,7 +142,7 @@ def main():
     from_date = dt.datetime.strptime(args.from_date, "%Y-%m-%d").date()
     to_date = dt.datetime.strptime(args.to_date, "%Y-%m-%d").date()
 
-    data_layer, is_synthetic = get_data_layer()
+    data_layer, source_label = resolve_data_layer(initial_spot=args.initial_spot, prefer=args.data_source)
 
     if args.index:
         raw = data_layer.get_index_historical(from_date, to_date, interval=args.interval)
@@ -174,7 +168,7 @@ def main():
 
     annotated = add_indicator_columns(raw, kinds, is_index=args.index)
 
-    tag = "SYNTHETIC" if is_synthetic else "LIVE"
+    tag = source_label
     out_path = Path(args.out) if args.out else OUTPUT_DIR / f"{label}_{effective_minutes}min_{tag}.csv"
     annotated.to_csv(out_path, index=False)
 

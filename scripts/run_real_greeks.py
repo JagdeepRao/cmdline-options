@@ -8,14 +8,14 @@ Set credentials as environment variables first:
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
 
-Run: python3 run_real_greeks.py
+Run (from the repo root): python3 scripts/run_real_greeks.py
 """
 
 import os
 import datetime as dt
 
-from data_layer_breeze import NiftyOptionsDataBreeze
-from pricing import add_greeks_to_option_df
+from nifty_backtester.data_layer_breeze import NiftyOptionsDataBreeze
+from nifty_backtester.pricing import add_greeks_to_option_df
 
 API_KEY = os.environ.get("BREEZE_API_KEY", "")
 API_SECRET = os.environ.get("BREEZE_API_SECRET", "")

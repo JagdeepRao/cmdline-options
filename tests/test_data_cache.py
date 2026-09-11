@@ -14,8 +14,8 @@ import datetime as dt
 import pandas as pd
 import pytest
 
-from data_cache import DataCache
-from data_layer_sample import NiftyOptionsDataSample
+from nifty_backtester.data_cache import DataCache
+from nifty_backtester.data_layer_sample import NiftyOptionsDataSample
 
 
 def _df(dates: list[dt.date], value: float = 1.0) -> pd.DataFrame:

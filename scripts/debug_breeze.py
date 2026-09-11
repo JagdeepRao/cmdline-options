@@ -8,7 +8,7 @@ Set your credentials as environment variables first:
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
 
-Run: python3 debug_breeze.py
+Run (from the repo root): python3 scripts/debug_breeze.py
 """
 
 import os

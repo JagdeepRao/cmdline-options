@@ -211,7 +211,7 @@ class DeltaIndicator(Indicator):
         self.q = q
 
     def value(self, as_of: dt.datetime) -> float:
-        from pricing import solve_iv_and_greeks
+        from .pricing import solve_iv_and_greeks
         spot = self.spot_lookup(as_of)
         price = self.option_price_lookup(as_of)
         result = solve_iv_and_greeks(

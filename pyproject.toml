@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nifty-backtester"
+version = "0.1.0"
+description = "NIFTY options strategy backtester (ICICI Breeze data) -- position shapes, adjustment strategies, and metrics."
+requires-python = ">=3.10"
+dependencies = [
+    "breeze_connect",
+    "fastparquet",
+    "pandas",
+    "pyarrow",
+    "vollib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["nifty_backtester*"]
+
+[tool.setuptools.package-data]
+nifty_backtester = ["expiry_calendar.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

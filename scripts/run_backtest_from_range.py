@@ -10,37 +10,41 @@ of assumption that silently breaks. Update expiry_calendar.csv with the
 real NSE/broker calendar; override --weekly-expiry/--monthly-expiry
 explicitly if you need to bypass the calendar for a specific run.
 
-DATA SOURCE: every price fetch goes through NiftyOptionsDataBreeze, which
-routes through DataCache (file-based, retries on throttling) -- so a
-second run over an overlapping range re-fetches only what's missing, not
-everything. Uses live Breeze if BREEZE_API_KEY / BREEZE_API_SECRET /
-BREEZE_SESSION_TOKEN are all set as environment variables; otherwise falls
-back to the synthetic sample data layer, clearly labeled as such, so the
-script itself is testable without live credentials.
+DATA SOURCE (--data-source, default "auto" -- see nifty_backtester.data_sources):
+  auto -> LIVE Breeze (through DataCache -- file-based, retries on
+  throttling, so a second run over an overlapping range re-fetches only
+  what's missing) if BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN
+  are all set; else CACHED (real_data_cache/*.parquet -- committed real
+  data, no live session needed) if anything's committed; else SYNTHETIC.
+  Force one explicitly with --data-source {breeze,cached,synthetic}.
 
-Usage (on a machine with real Breeze credentials):
+Usage (on a machine with real Breeze credentials, from the repo root):
   export BREEZE_API_KEY="..."
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
-  python3 run_backtest_from_range.py --from-date 2026-09-01 --to-date 2026-09-04
+  python3 scripts/run_backtest_from_range.py --from-date 2026-09-01 --to-date 2026-09-04
 
 That's it -- weekly and monthly hedge expiries are both looked up from
 expiry_calendar.csv automatically. Add --skip-combinations to run just the
 four sold-leg shapes (faster) instead of the full 11-row comparison
 including hedge/overlay/OTM.
+
+No live credentials handy but real_data_cache/ has committed data for your
+range? Run entirely credential-free against real data:
+  python3 scripts/run_backtest_from_range.py --from-date 2026-09-01 --to-date 2026-09-04 --data-source cached
 """
 
-import os
 import argparse
 import datetime as dt
 from pathlib import Path
 
 import pandas as pd
 
-from backtest_engine import FullBacktestConfig, run_full_backtest
-from market_data import BreezeMarketDataProvider
-from expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
-import metrics
+from nifty_backtester.backtest_engine import FullBacktestConfig, run_full_backtest
+from nifty_backtester.market_data import BreezeMarketDataProvider
+from nifty_backtester.expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
+from nifty_backtester.data_sources import resolve_data_layer, VALID_SOURCES
+from nifty_backtester import metrics
 
 OUTPUT_DIR = Path("./downloaded_samples")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -55,23 +59,15 @@ REPORT_COLUMNS = [
 # DATA SOURCE
 # ─────────────────────────────────────────────
 
-def get_provider(initial_spot: float):
-    """Real Breeze (through DataCache) if credentials are set, else the
-    synthetic fallback -- returns (provider, is_synthetic). A FRESH data
-    layer is constructed per call deliberately: NiftyOptionsDataBreeze
-    holds its own DataCache instance, and every fetch through it is what
-    persists to disk -- repeated calls across configs in the same run
-    share the same on-disk cache files regardless."""
-    api_key = os.environ.get("BREEZE_API_KEY")
-    api_secret = os.environ.get("BREEZE_API_SECRET")
-    session_token = os.environ.get("BREEZE_SESSION_TOKEN")
-    if api_key and api_secret and session_token:
-        from data_layer_breeze import NiftyOptionsDataBreeze
-        data_layer = NiftyOptionsDataBreeze(api_key, api_secret, session_token)
-        return BreezeMarketDataProvider(data_layer), False
-    from data_layer_sample import NiftyOptionsDataSample
-    data_layer = NiftyOptionsDataSample(index_start_price=initial_spot)
-    return BreezeMarketDataProvider(data_layer), True
+def get_provider(initial_spot: float, prefer: str = "auto"):
+    """Returns (provider, source_label) via the shared resolve_data_layer
+    (LIVE > CACHED > SYNTHETIC). A FRESH data layer is constructed per call
+    deliberately: NiftyOptionsDataBreeze holds its own DataCache instance,
+    and every fetch through it is what persists to disk -- repeated calls
+    across configs in the same run share the same on-disk cache files
+    regardless."""
+    data_layer, source_label = resolve_data_layer(initial_spot=initial_spot, prefer=prefer)
+    return BreezeMarketDataProvider(data_layer), source_label
 
 
 # ─────────────────────────────────────────────
@@ -130,7 +126,9 @@ def main():
     parser.add_argument("--monthly-expiry-prior-trading-day", default=None,
                          help="required alongside --monthly-expiry if you override it")
     parser.add_argument("--bar-freq-minutes", type=int, default=15)
-    parser.add_argument("--initial-spot", type=float, default=24500.0, help="only affects the synthetic fallback")
+    parser.add_argument("--initial-spot", type=float, default=24500.0, help="only affects the SYNTHETIC fallback")
+    parser.add_argument("--data-source", default="auto", choices=VALID_SOURCES,
+                         help="auto (default) picks LIVE > CACHED > SYNTHETIC; see this script's docstring")
     parser.add_argument("--skip-combinations", action="store_true",
                          help="only run the 4 sold-leg shapes; skip hedge/overlay/OTM combinations (faster)")
     args = parser.parse_args()
@@ -161,15 +159,19 @@ def main():
     else:
         monthly_expiry, monthly_prior = select_monthly_hedge_expiry_from_calendar(calendar, from_date)
 
-    _, is_synthetic = get_provider(args.initial_spot)
-    tag = "SYNTHETIC" if is_synthetic else "LIVE"
+    _, source_label = get_provider(args.initial_spot, prefer=args.data_source)
+    tag = source_label
 
     print(f"[{tag}] Date range: {start} .. {end}")
     print(f"Weekly expiry: {weekly_expiry} (prior trading day / expiry-eve close: {weekly_prior})")
     print(f"Monthly hedge expiry: {monthly_expiry} (prior trading day: {monthly_prior})")
-    if is_synthetic:
-        print("NOTE: BREEZE_API_KEY / BREEZE_API_SECRET / BREEZE_SESSION_TOKEN not all set -- "
+    if source_label == "SYNTHETIC":
+        print("NOTE: no live Breeze credentials and no committed real_data_cache/ data found -- "
               "results below are on SYNTHETIC data, not real history.")
+    elif source_label == "CACHED":
+        print(f"NOTE: results below use a committed real_data_cache/ snapshot (real market data, "
+              f"no live session) -- coverage is only as complete as what's been committed for this "
+              f"date range/expiry/strikes.")
     if to_date < weekly_prior:
         print(f"NOTE: --to-date ({to_date}) is before the detected weekly expiry-eve ({weekly_prior}) -- "
               f"this run's window ends before that contract's own expiry-eve close, so you won't see "
@@ -183,7 +185,7 @@ def main():
 
     rows = []
     for label, config in configs:
-        provider, _ = get_provider(args.initial_spot)  # fresh provider per run (see get_provider docstring)
+        provider, _ = get_provider(args.initial_spot, prefer=args.data_source)  # fresh provider per run (see get_provider docstring)
         result = run_full_backtest(provider, config)
         report = metrics.full_report(result.equity_curve, result.trade_pnls, config.initial_capital)
         report["label"] = label

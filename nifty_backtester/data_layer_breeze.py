@@ -49,7 +49,7 @@ from pathlib import Path
 import pandas as pd
 from breeze_connect import BreezeConnect
 
-from data_cache import DataCache
+from .data_cache import DataCache
 
 CACHE_DIR = Path("./data_cache")
 CACHE_DIR.mkdir(exist_ok=True)

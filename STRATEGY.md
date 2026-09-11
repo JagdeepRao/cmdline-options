@@ -311,19 +311,24 @@ here for visibility.
 
 | File | Contents |
 |---|---|
-| `strategy.py` | Position/leg data model, all indicators, all `AdjustmentStrategy` implementations |
-| `pricing.py` | Black-Scholes-Merton pricing, IV solve, Greeks (`solve_iv_and_greeks`) |
-| `data_layer_breeze.py` | Live Breeze-backed data layer: historical option/index data, ATM resolution |
-| `data_layer_sample.py` | Same interface as the Breeze data layer, backed by synthetic data — for credential-free tests |
-| `sample_data.py` | Deterministic synthetic OHLCV generators used by `data_layer_sample.py` and tests |
-| `data_cache.py` | File-based incremental cache with retry/backoff, sitting in front of every historical-data fetch |
-| `expiry_utils.py` | Monthly hedge expiry selection, expiry-eve close-bar timing |
-| `market_data.py` | `MarketDataProvider` abstraction (`SyntheticMarketDataProvider` / `BreezeMarketDataProvider`), proper OHLC resampling (`_resample_ohlc`) |
-| `metrics.py` | Equity-curve and trade-level performance metrics (Sharpe, Sortino, Calmar, drawdown, win rate, etc.) |
-| `backtest_engine.py` | Time-stepping loop that opens positions, evaluates strategies, and executes their actions bar-by-bar |
-| `expiry_calendar.csv` | The expiry/prior-trading-day source of truth — **shipped as an illustrative template, replace before real use** |
-| `download_option_data.py` | Downloads a real (or synthetic-fallback) option leg/index and annotates it with indicator BUY/SELL signals, for manually validating an indicator against real price action |
-| `download_and_run_strategy.py` | Runs a full strategy against real (or synthetic-fallback) data and prints every adjustment decision with its trigger, for manually validating the strategy layer the same way |
-| `run_backtest_from_range.py` | Turnkey entry point: give it a date range, it resolves expiries from the calendar and returns a metrics table across all strategy/position combinations |
-| `compare_strategies.py`, `run_all_strategies_demo.py` | Demo/comparison scripts against synthetic data |
-| `test_quick_strategy_checks.py`, `test_point1_point2_checks.py`, `test_full_backtest_engine.py`, `test_data_cache.py`, `test_market_data_and_expiry_detection.py` | Full test suite (46 tests) for the pieces described in this document |
+| `nifty_backtester/strategy.py` | Position/leg data model, all indicators, all `AdjustmentStrategy` implementations |
+| `nifty_backtester/pricing.py` | Black-Scholes-Merton pricing, IV solve, Greeks (`solve_iv_and_greeks`) |
+| `nifty_backtester/data_layer_breeze.py` | Live Breeze-backed data layer: historical option/index data, ATM resolution |
+| `nifty_backtester/data_layer_sample.py` | Same interface as the Breeze data layer, backed by synthetic data — for credential-free tests |
+| `nifty_backtester/data_layer_cached.py` | Same interface again, but reads ONLY committed parquet files under `real_data_cache/` — no network, no live session; real data without credentials |
+| `nifty_backtester/data_sources.py` | `resolve_data_layer()` — shared LIVE > CACHED > SYNTHETIC selection used by every script |
+| `nifty_backtester/scenarios.py` | Named date-range "scenarios" (market conditions) loaded from `real_data_cache/scenarios.json` |
+| `nifty_backtester/sample_data.py` | Deterministic synthetic OHLCV generators used by `data_layer_sample.py` and tests |
+| `nifty_backtester/data_cache.py` | File-based incremental cache with retry/backoff, sitting in front of every historical-data fetch |
+| `nifty_backtester/expiry_utils.py` | Monthly hedge expiry selection, expiry-eve close-bar timing |
+| `nifty_backtester/market_data.py` | `MarketDataProvider` abstraction (`SyntheticMarketDataProvider` / `BreezeMarketDataProvider`), proper OHLC resampling (`_resample_ohlc`) |
+| `nifty_backtester/metrics.py` | Equity-curve and trade-level performance metrics (Sharpe, Sortino, Calmar, drawdown, win rate, etc.) |
+| `nifty_backtester/backtest_engine.py` | Time-stepping loop that opens positions, evaluates strategies, and executes their actions bar-by-bar |
+| `nifty_backtester/expiry_calendar.csv` | The expiry/prior-trading-day source of truth — **shipped as an illustrative template, replace before real use** |
+| `scripts/download_option_data.py` | Downloads data (LIVE/CACHED/SYNTHETIC, see README) for an option leg/index and annotates it with indicator BUY/SELL signals, for manually validating an indicator against real price action |
+| `scripts/download_and_run_strategy.py` | Runs a full strategy against LIVE/CACHED/SYNTHETIC data and prints every adjustment decision with its trigger, for manually validating the strategy layer the same way |
+| `scripts/run_backtest_from_range.py` | Turnkey entry point: give it a date range, it resolves expiries from the calendar and returns a metrics table across all strategy/position combinations |
+| `scripts/run_scenarios.py` | Same sweep as above, run across every named scenario (market condition) in `real_data_cache/scenarios.json` |
+| `scripts/compare_strategies.py`, `scripts/run_all_strategies_demo.py` | Demo/comparison scripts against synthetic data |
+| `real_data_cache/` | Committed real market data (parquet) + `scenarios.json` — see its own README.md for the upload workflow |
+| `tests/test_quick_strategy_checks.py`, `tests/test_point1_point2_checks.py`, `tests/test_full_backtest_engine.py`, `tests/test_data_cache.py`, `tests/test_market_data_and_expiry_detection.py`, `tests/test_scenarios.py` | Full test suite (54 tests) for the pieces described in this document |

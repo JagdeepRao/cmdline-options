@@ -14,9 +14,9 @@ import warnings
 import pandas as pd
 import pytest
 
-from market_data import _resample_ohlc, SyntheticMarketDataProvider, BreezeMarketDataProvider
-from data_layer_sample import NiftyOptionsDataSample
-from expiry_utils import (
+from nifty_backtester.market_data import _resample_ohlc, SyntheticMarketDataProvider, BreezeMarketDataProvider
+from nifty_backtester.data_layer_sample import NiftyOptionsDataSample
+from nifty_backtester.expiry_utils import (
     load_expiry_calendar, get_next_expiry, get_prior_trading_day_for_expiry,
     select_monthly_hedge_expiry_from_calendar, select_monthly_hedge_expiry,
 )

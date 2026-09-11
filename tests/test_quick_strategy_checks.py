@@ -12,7 +12,7 @@ that just changed:
 """
 
 import datetime as dt
-from strategy import (
+from nifty_backtester.strategy import (
     Leg, MultiLegPosition, Right, Direction, ActionType,
     RenkoSuperTrendIndicator, RenkoOpportunisticOTMStrategy,
     RSIIndicator, SupertrendEMAIndicator, RSICrossAdapter, SupertrendEMAAdapter,

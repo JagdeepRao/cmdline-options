@@ -14,10 +14,10 @@ import datetime as dt
 import warnings
 import pandas as pd
 
-from market_data import SyntheticMarketDataProvider
-from backtest_engine import FullBacktestConfig, run_full_backtest
-from expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
-import metrics
+from nifty_backtester.market_data import SyntheticMarketDataProvider
+from nifty_backtester.backtest_engine import FullBacktestConfig, run_full_backtest
+from nifty_backtester.expiry_utils import load_expiry_calendar, get_next_expiry, select_monthly_hedge_expiry_from_calendar
+from nifty_backtester import metrics
 
 # vollib divides by zero internally for a handful of near-degenerate quotes
 # (e.g. price ~0 far OTM) -- solve_iv_and_greeks already catches this and

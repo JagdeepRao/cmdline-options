@@ -12,13 +12,13 @@ import datetime as dt
 import pandas as pd
 import numpy as np
 
-from strategy import (
+from nifty_backtester.strategy import (
     Leg, MultiLegPosition, Right, Direction, ActionType, Action,
     DeltaThresholdStrategy, DeltaIndicator, FixedMoveStrategy,
     DirectionalOverlayStrategy, SoldLegSignalStrategy, RSICrossAdapter,
     RSIIndicator,
 )
-from expiry_utils import select_monthly_hedge_expiry, is_expiry_eve_close_bar, is_on_or_after_expiry
+from nifty_backtester.expiry_utils import select_monthly_hedge_expiry, is_expiry_eve_close_bar, is_on_or_after_expiry
 
 
 class ConstDelta(DeltaIndicator):

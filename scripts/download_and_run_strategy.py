@@ -13,66 +13,60 @@ script lets you eyeball whether the resulting POSITION ADJUSTMENTS (recenter,
 close-and-reopen, harvest, overlay flip, OTM entry/exit) look right given
 those same underlying signals.
 
-DATA SOURCE: same convention as download_option_data.py -- uses live
-Breeze if BREEZE_API_KEY / BREEZE_API_SECRET / BREEZE_SESSION_TOKEN are all
-set, else falls back to the synthetic sample data layer (clearly labeled).
+DATA SOURCE (--data-source, default "auto" -- see nifty_backtester.data_sources):
+  auto -> LIVE Breeze if credentials are set; else CACHED (real_data_cache/,
+  committed real data, no live session needed) if anything's committed;
+  else SYNTHETIC. Force one explicitly with --data-source {breeze,cached,synthetic}.
 
-Examples:
+Examples (run from the repo root):
   # Real data, delta-threshold sold straddle only (2026-09-08 must exist in expiry_calendar.csv)
   export BREEZE_API_KEY=... BREEZE_API_SECRET=... BREEZE_SESSION_TOKEN=...
-  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+  python3 scripts/download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
       --weekly-expiry 2026-09-08 --sold-leg-strategy delta_threshold
 
   # Real data, RSI sold straddle + hedge + overlay + 2x OTM
-  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+  python3 scripts/download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
       --weekly-expiry 2026-09-08 --sold-leg-strategy rsi_signal \\
       --include-hedge --monthly-expiry 2026-09-29 \\
       --include-overlay --overlay-kind rsi \\
       --include-otm --otm-multiplier 2
 
-  # No credentials set -> runs against synthetic data automatically
-  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 --weekly-expiry 2026-09-08
+  # No live credentials, but real_data_cache/ has committed data for this range
+  python3 scripts/download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+      --weekly-expiry 2026-09-08 --data-source cached
+
+  # No credentials, nothing committed -> runs against synthetic data automatically
+  python3 scripts/download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 --weekly-expiry 2026-09-08
 
   # Expiry date not in your calendar yet? Bypass it for one run:
-  python3 download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
+  python3 scripts/download_and_run_strategy.py --from-date 2026-09-04 --to-date 2026-09-08 \\
       --weekly-expiry 2026-09-08 --weekly-expiry-prior-trading-day 2026-09-04
 """
 
-import os
 import argparse
 import datetime as dt
 from pathlib import Path
 
 import pandas as pd
 
-from backtest_engine import FullBacktestConfig, run_full_backtest
-from market_data import BreezeMarketDataProvider
-from expiry_utils import load_expiry_calendar, get_prior_trading_day_for_expiry
-import metrics
+from nifty_backtester.backtest_engine import FullBacktestConfig, run_full_backtest
+from nifty_backtester.market_data import BreezeMarketDataProvider
+from nifty_backtester.expiry_utils import load_expiry_calendar, get_prior_trading_day_for_expiry
+from nifty_backtester.data_sources import resolve_data_layer, VALID_SOURCES
+from nifty_backtester import metrics
 
 OUTPUT_DIR = Path("./downloaded_samples")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-def get_provider(initial_spot: float):
+def get_provider(initial_spot: float, prefer: str = "auto"):
     """BreezeMarketDataProvider works with ANY object exposing
-    get_index_historical/get_option_historical/find_atm_strike -- both
-    NiftyOptionsDataBreeze (real) and NiftyOptionsDataSample (synthetic)
-    satisfy that, so the same provider class wraps either one."""
-    api_key = os.environ.get("BREEZE_API_KEY")
-    api_secret = os.environ.get("BREEZE_API_SECRET")
-    session_token = os.environ.get("BREEZE_SESSION_TOKEN")
-    if api_key and api_secret and session_token:
-        from data_layer_breeze import NiftyOptionsDataBreeze
-        print("Using LIVE Breeze data.")
-        data_layer = NiftyOptionsDataBreeze(api_key, api_secret, session_token)
-        return BreezeMarketDataProvider(data_layer), False
-    from data_layer_sample import NiftyOptionsDataSample
-    print("BREEZE_API_KEY / BREEZE_API_SECRET / BREEZE_SESSION_TOKEN not all set "
-          "-- falling back to SYNTHETIC sample data. Set those three env vars "
-          "to validate against real Breeze data instead.")
-    data_layer = NiftyOptionsDataSample(index_start_price=initial_spot)
-    return BreezeMarketDataProvider(data_layer), True
+    get_index_historical/get_option_historical/find_atm_strike --
+    NiftyOptionsDataBreeze (real), NiftyOptionsDataCached (committed real
+    snapshot), and NiftyOptionsDataSample (synthetic) all satisfy that, so
+    the same provider class wraps whichever one resolve_data_layer picks."""
+    data_layer, source_label = resolve_data_layer(initial_spot=initial_spot, prefer=prefer)
+    return BreezeMarketDataProvider(data_layer), source_label
 
 
 def main():
@@ -96,6 +90,7 @@ def main():
     parser.add_argument("--bar-freq-minutes", type=int, default=15)
     parser.add_argument("--initial-spot", type=float, default=24500.0, help="only affects the synthetic fallback")
     parser.add_argument("--out-prefix", default=None)
+    parser.add_argument("--data-source", default="auto", choices=VALID_SOURCES, help="auto (default) picks LIVE > CACHED > SYNTHETIC; see this script's docstring")
 
     args = parser.parse_args()
 
@@ -119,7 +114,7 @@ def main():
         else:
             monthly_prior = get_prior_trading_day_for_expiry(load_expiry_calendar(), monthly_expiry, "monthly")
 
-    provider, is_synthetic = get_provider(args.initial_spot)
+    provider, source_label = get_provider(args.initial_spot, prefer=args.data_source)
 
     config = FullBacktestConfig(
         start=start, end=end, weekly_expiry=weekly_expiry, weekly_expiry_prior_trading_day=weekly_prior,
@@ -135,7 +130,7 @@ def main():
     result = run_full_backtest(provider, config)
     report = metrics.full_report(result.equity_curve, result.trade_pnls, config.initial_capital)
 
-    tag = "SYNTHETIC" if is_synthetic else "LIVE"
+    tag = source_label
     summary = (f"{args.sold_leg_strategy}"
                f"{' + hedge' if args.include_hedge else ''}"
                f"{f' + overlay({args.overlay_kind})' if args.include_overlay else ''}"

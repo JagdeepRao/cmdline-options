@@ -6,13 +6,16 @@ Set credentials as environment variables first:
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
 
-Run: python3 test_find_atm.py
+Run (from the repo root): python3 scripts/verify_find_atm.py
+Renamed from test_find_atm.py: it's a manual verification script requiring a
+live Breeze session, not a pytest test -- keeping the old test_*.py name
+would make it collectible by bare `pytest` runs even outside tests/.
 """
 
 import os
 import datetime as dt
 
-from data_layer_breeze import NiftyOptionsDataBreeze
+from nifty_backtester.data_layer_breeze import NiftyOptionsDataBreeze
 API_KEY = os.environ.get("BREEZE_API_KEY", "")
 API_SECRET = os.environ.get("BREEZE_API_SECRET", "")
 SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "")
