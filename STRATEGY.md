@@ -317,6 +317,7 @@ here for visibility.
 | `nifty_backtester/data_layer_base.py` | `BaseCachedOptionsDataLayer` — shared find_atm_strike/nearest_otm_strikes/get_straddle_and_hedge_data logic for `data_layer_sample.py` and `data_layer_cached.py` (previously duplicated between them). Zero `breeze_connect` dependency, same as the two subclasses below. |
 | `nifty_backtester/data_layer_sample.py` | Same interface as the Breeze data layer, backed by synthetic data — for credential-free tests |
 | `nifty_backtester/data_layer_cached.py` | Same interface again, but reads ONLY committed parquet files under `real_data_cache/` — no network, no live session; real data without credentials |
+| `nifty_backtester/data_layer_scenario.py` | `ScenarioBoundedDataLayer` — wraps a cached/sample layer with explicit date-range/expiry-allowlist enforcement (raises on violation) plus an optional monotonic `as_of_cursor` replay clock (truncates, never raises) — foundation for `nifty_live`'s sample-backed replay feed |
 | `nifty_backtester/data_sources.py` | `resolve_data_layer()` — shared LIVE > CACHED > SYNTHETIC selection used by every script |
 | `nifty_backtester/scenarios.py` | Named date-range "scenarios" (market conditions) loaded from `real_data_cache/scenarios.json` |
 | `nifty_backtester/sample_data.py` | Deterministic synthetic OHLCV generators used by `data_layer_sample.py` and tests |
@@ -332,4 +333,4 @@ here for visibility.
 | `scripts/run_scenarios.py` | Same sweep as above, run across every named scenario (market condition) in `real_data_cache/scenarios.json` |
 | `scripts/compare_strategies.py`, `scripts/run_all_strategies_demo.py` | Demo/comparison scripts against synthetic data |
 | `real_data_cache/` | Committed real market data (parquet) + `scenarios.json` — see its own README.md for the upload workflow |
-| `tests/test_quick_strategy_checks.py`, `tests/test_point1_point2_checks.py`, `tests/test_full_backtest_engine.py`, `tests/test_data_cache.py`, `tests/test_data_layer_base.py`, `tests/test_market_data_and_expiry_detection.py`, `tests/test_scenarios.py` | Full test suite (60 tests) for the pieces described in this document |
+| `tests/test_quick_strategy_checks.py`, `tests/test_point1_point2_checks.py`, `tests/test_full_backtest_engine.py`, `tests/test_data_cache.py`, `tests/test_data_layer_base.py`, `tests/test_data_layer_scenario.py`, `tests/test_market_data_and_expiry_detection.py`, `tests/test_scenarios.py` | Full test suite (76 tests) for the pieces described in this document |
