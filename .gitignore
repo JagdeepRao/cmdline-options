@@ -10,4 +10,3 @@ downloaded_samples/
 build/
 dist/
 logs/
-.env

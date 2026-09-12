@@ -137,11 +137,15 @@ ways, both producing the identical JSON schema:
   open positions via `kiteconnect` (read-only; Zerodha's free tier gives
   no live price feed, so it's never used for anything but "what do I
   hold" — Breeze remains the sole price source everywhere, live and
-  historical alike). Every field name and sign convention this relies on
-  was cross-checked against Zerodha's own docs/SDK/forum — see the module
-  docstring for specifics — but **run
-  `python3 scripts/verify_zerodha_import.py` against your real account
-  before trusting it with real capital**; it prints the raw
+  historical alike). Kite's `access_token` is valid for one trading day
+  only — run `python3 scripts/generate_kite_token.py` each morning; it
+  walks the login/`request_token` exchange and writes the fresh
+  `access_token` into `.env` for you (needs `KITE_API_KEY`/
+  `KITE_API_SECRET` already in `.env` — see `.env.example`). Every field
+  name and sign convention this relies on was cross-checked against
+  Zerodha's own docs/SDK/forum — see the module docstring for specifics —
+  but **run `python3 scripts/verify_zerodha_import.py` against your real
+  account before trusting it with real capital**; it prints the raw
   `positions()`/`instruments()` responses alongside what gets derived
   from them, the same pattern as `verify_find_atm.py`/`debug_breeze.py`
   for the Breeze side.

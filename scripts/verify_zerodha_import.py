@@ -11,21 +11,12 @@ the same way scripts/verify_find_atm.py and scripts/debug_breeze.py are the
 first real-account checks for the Breeze side, before trusting
 import_from_zerodha() with real position state.
 
-Auth flow (kiteconnect, NOT the same flow as Breeze):
-  1. Log in at https://kite.zerodha.com/connect/login?api_key=YOUR_API_KEY
-     -- after login you're redirected to your registered redirect URL with
-     a `request_token` query parameter.
-  2. Exchange that for an access_token (valid for the trading day only):
-       from kiteconnect import KiteConnect
-       kite = KiteConnect(api_key="...")
-       data = kite.generate_session("request_token_from_step_1", api_secret="...")
-       access_token = data["access_token"]
-  3. Set KITE_API_KEY / KITE_ACCESS_TOKEN as environment variables and run
-     this script. Since access_token is regenerated every trading day,
-     the intended workflow is to put both in a local, gitignored .env
-     file (see .env.example at the repo root) and just overwrite the
-     KITE_ACCESS_TOKEN line after each login -- this script loads .env
-     automatically, so there's nothing to re-export by hand.
+Auth flow (kiteconnect, NOT the same flow as Breeze): run
+`python3 scripts/generate_kite_token.py` first -- it walks the
+login/request_token/access_token exchange and writes KITE_ACCESS_TOKEN
+into your local .env for you. This script then just loads .env (via
+env_loader.load_env()) and expects KITE_API_KEY / KITE_ACCESS_TOKEN to
+already be set there.
 
 Run (from the repo root): python3 scripts/verify_zerodha_import.py
 
