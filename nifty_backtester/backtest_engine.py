@@ -48,6 +48,7 @@ from .strategy import (
 from .expiry_utils import is_expiry_eve_close_bar, is_on_or_after_expiry
 from .pricing import solve_iv_and_greeks
 from .market_data import MarketDataProvider
+from .time_grid import trading_time_grid
 
 
 # ─────────────────────────────────────────────
@@ -108,18 +109,7 @@ class BacktestResult:
 # ─────────────────────────────────────────────
 
 def _time_grid(config: FullBacktestConfig) -> list[dt.datetime]:
-    grid = []
-    cursor = config.start.date()
-    while cursor <= config.end.date():
-        if cursor.weekday() < 5:
-            t = dt.datetime.combine(cursor, dt.time(9, 15))
-            day_end = dt.datetime.combine(cursor, dt.time(15, 30))
-            while t <= day_end:
-                if config.start <= t <= config.end:
-                    grid.append(t)
-                t += dt.timedelta(minutes=config.bar_freq_minutes)
-        cursor += dt.timedelta(days=1)
-    return grid
+    return trading_time_grid(config.start, config.end, config.bar_freq_minutes)
 
 
 # ─────────────────────────────────────────────

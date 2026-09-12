@@ -130,7 +130,7 @@ A separate package, built on the exact same `Leg`/`MultiLegPosition`/
 tracks currently-held positions and (eventually) reacts to live Breeze
 ticks the same way `backtest_engine.py` reacts to historical bars.
 
-**Phase 3 (current): `PositionStore`.** Seeds position state one of two
+**Phase 3: `PositionStore`.** Seeds position state one of two
 ways, both producing the identical JSON schema:
 - **Manually** — hand-author a JSON file (schema documented in
   `nifty_live/position_store.py`'s `PositionStore` docstring) for whatever
@@ -179,7 +179,36 @@ anything else in that stack wanting to install its own reactor after
 module docstring for the full trace and the mitigation options if this
 ever becomes a real constraint.
 
-Remaining phases: `chain_downloader` (periodic full-chain snapshots),
-`ReplayLiveFeed`/`live_engine` (runs the same `AdjustmentStrategy.evaluate()`
-against replayed or live bars), `BreezeWebSocketFeed`, then webapp
-integration.
+**Phase 5 (current): `ReplayLiveFeed` / `live_engine`.** Runs the exact
+same `AdjustmentStrategy.evaluate()` the batch backtester uses, against
+either replayed history (zero live session, for testing/validation) or a
+real live feed — with **zero changes to `strategy.py`**, since it was
+already built data-source-agnostic:
+- `nifty_live/replay_feed.py`'s `ReplayLiveFeed` wraps
+  `ScenarioBoundedDataLayer`'s `as_of_cursor` (Phase 2) to walk historical
+  (sample or committed-real) bars bar-by-bar as though arriving live —
+  verified to have zero look-ahead. `live_polling_clock()` is the real-live
+  counterpart (yields `datetime.now()` on an interval); the exact same
+  engine loop runs against either.
+- `nifty_live/live_engine.py`'s `run_live_monitor()` evaluates every
+  configured strategy at each time step and sends whatever it recommends
+  to a `Notifier` (`ConsoleNotifier` for now) — **it never executes a
+  trade or mutates position state**. This is deliberate decision support,
+  matching the intended workflow: watch the console, validate the
+  strategy is behaving as expected, act manually (or via the webapp
+  later), then update position state yourself before the next run.
+- Try it: `python3 scripts/run_live_monitor_demo.py` — runs the whole
+  pipeline against sample data with a seeded demo position, zero live
+  session needed.
+
+Remaining phases: `BreezeWebSocketFeed` (a lower-latency, push-based
+alternative to polling Breeze's REST endpoint — `run_live_monitor()`
+already works against a real live feed today via polling, so this is an
+efficiency upgrade, not a new code path), then webapp integration. A
+periodic full-option-chain downloader was considered and deliberately
+**not** built — every strike this codebase trades is already resolved
+analytically (ATM via put-call parity, delta-target via a directional
+walk, just-OTM via arithmetic), so a bulk chain scan filtered by
+volume/OI would have no consumer; a single-strike liquidity check before
+executing a live trade is a two-line addition if/when it's actually
+needed, not infrastructure worth building speculatively.
