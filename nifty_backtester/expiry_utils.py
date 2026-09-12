@@ -33,6 +33,41 @@ from typing import Optional
 import pandas as pd
 
 DEFAULT_CALENDAR_PATH = Path(__file__).parent / "expiry_calendar.csv"
+DEFAULT_HOLIDAYS_PATH = Path(__file__).parent / "nse_holidays.csv"
+
+# WEEKLY-EXPIRY WEEKDAY HISTORY, for documentation and for
+# scripts/generate_expiry_calendar_candidates.py ONLY -- this is
+# deliberately NEVER read by load_expiry_calendar/get_next_expiry/etc. at
+# runtime. The whole point of expiry_calendar.csv as a data file (see this
+# module's top-of-file docstring) is that the engine never computes an
+# expiry date from a weekday rule, because that rule keeps changing
+# exchange-side. This table exists purely so a human generating/reviewing
+# a calendar update doesn't have to independently research the history
+# each time; it is a candidate-generation aid, not a source of truth.
+#
+# CONFIRMED (web search, cross-checked against multiple financial-news
+# sources reporting the same NSE/SEBI circulars -- re-verify against an
+# official NSE circular before trusting a real trading decision on it):
+#   - Thursday was NIFTY's weekly AND monthly expiry day for roughly 25
+#     years, through 2025-08-28.
+#   - NSE originally announced (2025-03-04 circular) a move to MONDAY
+#     effective 2025-04-05 -- this was announced, then explicitly
+#     DEFERRED/paused (2025-03-27 circular) before ever taking effect.
+#     NIFTY expiry was NEVER actually on Monday in production.
+#   - SEBI then directed exchanges to standardize on Tuesday-or-Thursday
+#     only (circular, ~May 2025). NSE chose Tuesday; the change took
+#     effect for contracts from 2025-09-01 (last Thursday expiry was
+#     2025-08-28). NIFTY weekly AND monthly expiry has been Tuesday since.
+#   - Monthly expiry is the LAST Tuesday of the calendar month (under the
+#     current, post-2025-09-01 regime) -- shifted to the prior trading day
+#     if that Tuesday is a holiday, same rule as weekly (see
+#     get_holiday_shifted_trading_day below).
+WEEKLY_EXPIRY_WEEKDAY_REGIMES = [
+    # (regime_start, regime_end_inclusive_or_None, weekday) -- weekday is
+    # Python's Monday=0..Sunday=6 convention.
+    (dt.date(2000, 6, 12), dt.date(2025, 8, 28), 3),   # Thursday, from NIFTY F&O launch through the last Thursday expiry
+    (dt.date(2025, 9, 1), None, 1),                     # Tuesday, current regime (None = still in effect)
+]
 
 
 def load_expiry_calendar(path: Path = DEFAULT_CALENDAR_PATH) -> pd.DataFrame:
@@ -85,6 +120,89 @@ def load_expiry_calendar(path: Path = DEFAULT_CALENDAR_PATH) -> pd.DataFrame:
         )
 
     return df.sort_values(["expiry_type", "expiry_date"]).reset_index(drop=True)
+
+
+def load_holidays(path: Path = DEFAULT_HOLIDAYS_PATH) -> set[dt.date]:
+    """Loads nse_holidays.csv into a set of dt.date. Raises FileNotFoundError
+    with a clear message if missing -- same fail-loud posture as
+    load_expiry_calendar, since a silently-empty holiday set would make
+    validate_calendar_against_holidays below pass vacuously and give false
+    confidence."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Holiday list not found at {path}. This is required for "
+            f"validate_calendar_against_holidays() / "
+            f"scripts/generate_expiry_calendar_candidates.py -- there is no "
+            f"fallback (a missing file must not silently mean 'no holidays')."
+        )
+    df = pd.read_csv(path)
+    if "holiday_date" not in df.columns:
+        raise ValueError(f"Holiday list at {path} is missing required column 'holiday_date'")
+    return set(pd.to_datetime(df["holiday_date"]).dt.date)
+
+
+def is_trading_day(d: dt.date, holidays: set[dt.date]) -> bool:
+    """Not a weekend and not in the holiday set. Used by
+    validate_calendar_against_holidays and the candidate-calendar
+    generator -- never by the live engine (see WEEKLY_EXPIRY_WEEKDAY_REGIMES
+    docstring above for why runtime code never derives expiry/trading days
+    from a rule)."""
+    return d.weekday() < 5 and d not in holidays
+
+
+def get_holiday_shifted_trading_day(d: dt.date, holidays: set[dt.date]) -> dt.date:
+    """If `d` itself isn't a valid trading day (weekend or holiday), steps
+    backward one day at a time until it finds one that is -- this is the
+    documented NSE convention ('if expiry day is a market holiday, expiry
+    moves to the prior trading day'), used only by the candidate generator,
+    never to silently reinterpret an already-committed expiry_calendar.csv
+    entry at runtime."""
+    while not is_trading_day(d, holidays):
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def validate_calendar_against_holidays(
+    calendar: pd.DataFrame,
+    holidays: set[dt.date],
+) -> None:
+    """Cross-checks an already-loaded calendar (as returned by
+    load_expiry_calendar) against a holiday set. Raises ValueError listing
+    EVERY violation found (not just the first) if any expiry_date or
+    prior_trading_day:
+      - falls on a weekend, or
+      - falls on a listed holiday.
+
+    This is deliberately NOT called automatically from load_expiry_calendar
+    -- wiring it in as a default would make load_expiry_calendar() raise
+    for anyone whose calendar and holiday files were sourced/updated at
+    different times (a realistic, recoverable situation, not necessarily a
+    data-entry error the way expiry_utils' existing prior_trading_day-must-
+    precede-expiry_date check is). Call this explicitly wherever you want
+    the extra guarantee -- e.g. before committing an updated
+    expiry_calendar.csv, or as a CI/test-suite check.
+    """
+    violations = []
+    for _, row in calendar.iterrows():
+        for col in ("expiry_date", "prior_trading_day"):
+            d = row[col]
+            if d.weekday() >= 5:
+                violations.append(
+                    f"{row['expiry_type']} {col}={d} ({d.strftime('%A')}) falls on a weekend"
+                )
+            elif d in holidays:
+                violations.append(
+                    f"{row['expiry_type']} {col}={d} ({d.strftime('%A')}) is a listed NSE holiday"
+                )
+
+    if violations:
+        raise ValueError(
+            f"Calendar has {len(violations)} entr(y/ies) landing on a weekend or "
+            f"listed holiday -- these dates were never real trading days, so any "
+            f"expiry/prior_trading_day computed from them is wrong:\n" +
+            "\n".join(f"  - {v}" for v in violations)
+        )
 
 
 def get_next_expiry(

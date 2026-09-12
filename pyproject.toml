@@ -24,7 +24,7 @@ live = ["kiteconnect"]
 include = ["nifty_backtester*", "nifty_live*"]
 
 [tool.setuptools.package-data]
-nifty_backtester = ["expiry_calendar.csv"]
+nifty_backtester = ["expiry_calendar.csv", "nse_holidays.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
