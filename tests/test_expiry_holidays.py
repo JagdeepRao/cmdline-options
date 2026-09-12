@@ -128,6 +128,37 @@ def test_shipped_calendar_and_holiday_list_are_mutually_consistent():
     validate_calendar_against_holidays(calendar, holidays)  # should not raise
 
 
+def test_weekly_expiry_weekday_regimes_are_contiguous_no_gaps():
+    """Regression test for a real bug found in review: the regime table
+    previously had regime 1 ending 2025-08-28 (the last actual Thursday
+    expiry date) and regime 2 starting 2025-09-01, leaving 2025-08-29
+    through 2025-08-31 with NO defined regime -- which broke
+    generate_expiry_calendar_candidates.py's day-by-day scan right at
+    that exact date. Every regime's end must be the day immediately
+    before the next regime's start (or None for the last, still-active
+    one)."""
+    from nifty_backtester.expiry_utils import WEEKLY_EXPIRY_WEEKDAY_REGIMES
+    for i in range(len(WEEKLY_EXPIRY_WEEKDAY_REGIMES) - 1):
+        _, this_end, _ = WEEKLY_EXPIRY_WEEKDAY_REGIMES[i]
+        next_start, _, _ = WEEKLY_EXPIRY_WEEKDAY_REGIMES[i + 1]
+        assert this_end is not None, f"only the LAST regime may have an open-ended (None) end date, regime {i} does not"
+        assert this_end + dt.timedelta(days=1) == next_start, (
+            f"gap or overlap between regime {i} (ends {this_end}) and regime {i+1} (starts {next_start})"
+        )
+
+
+def test_shipped_calendar_correctly_captures_the_thursday_to_tuesday_transition():
+    """Confirmed via an NSE circular (FAOP68747) and Zerodha's own
+    bulletin: the last Thursday weekly expiry was 2025-08-28 and the
+    first Tuesday weekly expiry was 2025-09-02 (2025-09-01 itself was a
+    Monday, not an expiry day) -- a short 5-day cycle, not the usual 7."""
+    calendar = load_expiry_calendar()
+    weekly_dates = set(calendar[calendar["expiry_type"] == "weekly"]["expiry_date"])
+    assert dt.date(2025, 8, 28) in weekly_dates
+    assert dt.date(2025, 9, 2) in weekly_dates
+    assert dt.date(2025, 9, 4) not in weekly_dates, "would be a Thursday expiry that never actually existed"
+
+
 def test_default_holidays_path_points_at_shipped_file():
     assert DEFAULT_HOLIDAYS_PATH.name == "nse_holidays.csv"
     assert DEFAULT_HOLIDAYS_PATH.exists()

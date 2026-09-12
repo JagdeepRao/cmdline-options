@@ -174,6 +174,23 @@ def test_get_next_expiry_beyond_calendar_coverage_raises():
         get_next_expiry(calendar, dt.date(2030, 1, 1), "weekly")
 
 
+def test_get_next_expiry_gap_before_calendar_coverage_raises_not_silently_jumps_forward():
+    """Regression test for a real bug found in review: campaign_start=
+    2025-09-01 against a calendar that (at the time) only had 2026 rows
+    returned monthly_expiry=2026-09-29 -- 393 days away -- without ever
+    raising, because 'first expiry_date >= as_of' happily matched the
+    first 2026 row. A calendar gap must fail loudly at the lookup, not
+    silently return a date over a year away. Uses a date safely before
+    the calendar's actual coverage (now 2023 onward) rather than the
+    original 2025-09-01 example, since that date is legitimately covered
+    now."""
+    calendar = load_expiry_calendar()
+    with pytest.raises(ValueError, match="GAP"):
+        get_next_expiry(calendar, dt.date(2020, 1, 1), "monthly")
+    with pytest.raises(ValueError, match="GAP"):
+        get_next_expiry(calendar, dt.date(2020, 1, 1), "weekly")
+
+
 def test_get_prior_trading_day_for_expiry_exact_match():
     calendar = load_expiry_calendar()
     prior = get_prior_trading_day_for_expiry(calendar, dt.date(2026, 9, 8), "weekly")

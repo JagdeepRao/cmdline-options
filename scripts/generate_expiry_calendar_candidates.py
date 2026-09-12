@@ -58,12 +58,25 @@ def _prior_trading_day(expiry_date: dt.date, holidays: set) -> dt.date:
 
 
 def _weekly_candidates(from_date: dt.date, to_date: dt.date, holidays: set) -> list[dict]:
+    """Walks forward day by day looking for the next date whose OWN regime
+    says this is the expiry weekday -- deliberately NOT "look up the
+    weekday for the current scanning position, then jump straight to the
+    next occurrence of that weekday." That shortcut is wrong across a
+    regime transition: after the last Thursday expiry (2025-08-28), the
+    very next day (2025-08-29) is still nominally "in range" of the
+    Thursday regime by date, and jumping to "the next Thursday" from there
+    lands on 2025-09-04 -- but the real regime switched to Tuesday from
+    2025-09-01, so the actual next expiry is 2025-09-02 (a short,
+    5-day cycle, not the usual 7). Checking each candidate date against
+    ITS OWN regime (via _weekday_for(d) == d.weekday()) handles this
+    correctly with no special-casing of the transition itself."""
     rows = []
     cursor = from_date
     while cursor <= to_date:
-        weekday = _weekday_for(cursor)
-        days_ahead = (weekday - cursor.weekday()) % 7
-        raw_expiry = cursor + dt.timedelta(days=days_ahead)
+        d = cursor
+        while _weekday_for(d) != d.weekday():
+            d += dt.timedelta(days=1)
+        raw_expiry = d
         if raw_expiry > to_date:
             break
         expiry = get_holiday_shifted_trading_day(raw_expiry, holidays)

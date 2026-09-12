@@ -35,6 +35,14 @@ import pandas as pd
 DEFAULT_CALENDAR_PATH = Path(__file__).parent / "expiry_calendar.csv"
 DEFAULT_HOLIDAYS_PATH = Path(__file__).parent / "nse_holidays.csv"
 
+# Used only as a SANITY CHECK inside get_next_expiry (see its docstring) --
+# never to compute an expiry date itself. Real weekly contracts are ~7
+# days apart and monthly ~28-35 days apart, so a "nearest match" further
+# out than this all but certainly means the calendar has a GAP around
+# as_of (e.g. it only covers a different year entirely) rather than as_of
+# genuinely landing in a quiet stretch.
+_MAX_PLAUSIBLE_GAP_DAYS = {"weekly": 10, "monthly": 40}
+
 # WEEKLY-EXPIRY WEEKDAY HISTORY, for documentation and for
 # scripts/generate_expiry_calendar_candidates.py ONLY -- this is
 # deliberately NEVER read by load_expiry_calendar/get_next_expiry/etc. at
@@ -64,9 +72,15 @@ DEFAULT_HOLIDAYS_PATH = Path(__file__).parent / "nse_holidays.csv"
 #     get_holiday_shifted_trading_day below).
 WEEKLY_EXPIRY_WEEKDAY_REGIMES = [
     # (regime_start, regime_end_inclusive_or_None, weekday) -- weekday is
-    # Python's Monday=0..Sunday=6 convention.
-    (dt.date(2000, 6, 12), dt.date(2025, 8, 28), 3),   # Thursday, from NIFTY F&O launch through the last Thursday expiry
-    (dt.date(2025, 9, 1), None, 1),                     # Tuesday, current regime (None = still in effect)
+    # Python's Monday=0..Sunday=6 convention. Periods are CONTIGUOUS (each
+    # regime's end is the day immediately before the next one's start) --
+    # this must never have a gap, since _weekday_for() below is looked up
+    # for every calendar date a scan touches, not just actual expiry
+    # dates; a gap here previously broke the candidate generator right at
+    # this exact transition (found in review -- see
+    # generate_expiry_calendar_candidates.py's _weekly_candidates).
+    (dt.date(2000, 6, 12), dt.date(2025, 8, 31), 3),   # Thursday, from NIFTY F&O launch through the day before the Tuesday regime began (last actual Thursday expiry: 2025-08-28, confirmed via NSE circular FAOP68747 and Zerodha's own bulletin)
+    (dt.date(2025, 9, 1), None, 1),                     # Tuesday, current regime (None = still in effect); first actual Tuesday expiry: 2025-09-02 (2025-09-01 itself was a Monday)
 ]
 
 
@@ -213,7 +227,18 @@ def get_next_expiry(
     """Returns (expiry_date, prior_trading_day) for the first expiry of
     `expiry_type` on or after `as_of`. Raises ValueError if the calendar
     doesn't cover that far -- extend expiry_calendar.csv rather than
-    silently falling back to a guessed date."""
+    silently falling back to a guessed date.
+
+    Also raises ValueError if the nearest match found is implausibly far
+    from `as_of` (see _MAX_PLAUSIBLE_GAP_DAYS) -- regression guard for a
+    real bug found in review: if the calendar has a GAP (e.g. it only has
+    2026 rows and as_of is in 2025), "first expiry_date >= as_of" happily
+    matches the first 2026 row and returns an expiry over a YEAR away
+    without ever raising, silently corrupting every downstream campaign/
+    backtest date. A calendar gap should fail loudly here, at the lookup,
+    not surface later as a confusing 'no option data available' error deep
+    inside a data layer.
+    """
     subset = calendar[(calendar["expiry_type"] == expiry_type) & (calendar["expiry_date"] >= as_of)]
     if subset.empty:
         raise ValueError(
@@ -221,6 +246,18 @@ def get_next_expiry(
             f"it doesn't cover this far forward. Extend expiry_calendar.csv."
         )
     row = subset.iloc[0]
+    gap_days = (row["expiry_date"] - as_of).days
+    max_gap = _MAX_PLAUSIBLE_GAP_DAYS.get(expiry_type, 40)
+    if gap_days > max_gap:
+        raise ValueError(
+            f"Nearest {expiry_type} expiry on/after {as_of} is {row['expiry_date']} -- "
+            f"{gap_days} days away, which is implausible for a {expiry_type} contract "
+            f"(expected within ~{max_gap} days). This almost certainly means the calendar "
+            f"has a GAP around {as_of} (e.g. it covers a much later year but nothing near "
+            f"{as_of} itself) rather than {as_of} genuinely being this far from the next "
+            f"expiry -- extend expiry_calendar.csv to actually cover {as_of} instead of "
+            f"trusting this result."
+        )
     return row["expiry_date"], row["prior_trading_day"]
 
 
