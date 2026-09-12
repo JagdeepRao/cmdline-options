@@ -120,6 +120,7 @@ Every script's own `--help` / docstring has the full option list and examples.
 | `run_real_greeks.py` | Pulls one real option leg + matching spot and computes real IV/Greeks |
 | `verify_find_atm.py` | Manual verification of `find_atm_strike()` against a real account (not a pytest test — see Tests above) |
 | `run_campaign_backtest.py` | Runs the funded-strangle campaign strategy for one or more consecutive months, optionally sweeping the weekly-roll/monthly-close time of day to compare metrics (see STRATEGY.md §7) |
+| `compare_campaigns.py` | Runs Campaign 1 (funded strangle) and Campaign 2 (recentered straddle) over the same window(s) and prints a side-by-side metrics comparison, optionally sweeping both campaigns' adjustment time together (see STRATEGY.md §7.2) |
 
 ## Live monitoring (`nifty_live/`, in progress)
 

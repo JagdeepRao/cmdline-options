@@ -30,6 +30,24 @@ def test_load_holidays_returns_a_set_of_dates():
     assert dt.date(2026, 11, 24) in holidays  # Guru Nanak Jayanti -- the one that was silently wrong in the calendar
 
 
+def test_load_holidays_spans_three_years_of_breeze_zerodha_history():
+    """Breeze/Zerodha both offer ~3 years of historical data -- the holiday
+    list needs to cover that whole window, not just the current year the
+    shipped expiry_calendar.csv happens to use."""
+    holidays = load_holidays()
+    years_covered = {d.year for d in holidays}
+    assert {2023, 2024, 2025, 2026}.issubset(years_covered)
+    # a couple of spot-checks per year, cross-referenced against NSE's
+    # published circulars (2024's official circular explicitly confirmed
+    # 11-Apr for Id-Ul-Fitr, not the 10-Apr some secondary sources reported)
+    assert dt.date(2023, 1, 26) in holidays    # Republic Day 2023
+    assert dt.date(2023, 11, 27) in holidays   # Guru Nanak Jayanti 2023
+    assert dt.date(2024, 4, 11) in holidays    # Id-Ul-Fitr 2024 (per NSE circular CMTR59722)
+    assert dt.date(2024, 11, 2) in holidays    # Diwali-Balipratipada 2024
+    assert dt.date(2025, 8, 27) in holidays    # Ganesh Chaturthi 2025
+    assert dt.date(2025, 10, 22) in holidays   # Diwali-Balipratipada 2025
+
+
 def test_load_holidays_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_holidays(tmp_path / "does_not_exist.csv")

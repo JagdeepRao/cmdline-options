@@ -75,8 +75,13 @@ from .strategy import Leg, MultiLegPosition, Right, Direction
 from .pricing import solve_iv_and_greeks
 from .expiry_utils import is_trading_day, load_holidays, get_next_expiry, DEFAULT_HOLIDAYS_PATH
 from .market_data import MarketDataProvider
-
-DEFAULT_MIN_DAYS_TO_MONTHLY_EXPIRY_AT_START = 10
+from .campaign_common import (
+    MonthlyCampaignSchedule as CampaignExpirySchedule,
+    resolve_monthly_campaign_schedule as resolve_campaign_expiry_schedule,
+    first_trading_day_of_month, next_month as _next_month,
+    open_campaign_leg as _open_leg, close_campaign_leg as _close_leg, mark_campaign_equity as _mark_equity,
+    DEFAULT_MIN_DAYS_TO_MONTHLY_EXPIRY_AT_START,
+)
 
 
 # ─────────────────────────────────────────────
@@ -116,15 +121,6 @@ class CampaignStrikes:
 
 
 @dataclass
-class CampaignExpirySchedule:
-    monthly_expiry: dt.date
-    monthly_expiry_prior_trading_day: dt.date
-    # (expiry_date, prior_trading_day) pairs, ascending, ALWAYS ending with
-    # the cycle whose expiry_date == monthly_expiry (see module docstring).
-    weekly_cycles: list[tuple[dt.date, dt.date]]
-
-
-@dataclass
 class CampaignResult:
     equity_curve: pd.Series
     trade_pnls: list[float] = field(default_factory=list)
@@ -134,88 +130,12 @@ class CampaignResult:
     position: Optional[MultiLegPosition] = None
 
 
-# ─────────────────────────────────────────────
-# EXPIRY SCHEDULE RESOLUTION (calendar-driven, per this codebase's usual
-# discipline -- see expiry_utils.py's module docstring -- never a weekday
-# rule at runtime)
-# ─────────────────────────────────────────────
-
-def resolve_campaign_expiry_schedule(
-    calendar: pd.DataFrame,
-    campaign_start: dt.date,
-    min_days: int = DEFAULT_MIN_DAYS_TO_MONTHLY_EXPIRY_AT_START,
-) -> CampaignExpirySchedule:
-    """Resolves the monthly expiry (+ its prior trading day) and the full
-    sequence of weekly cycles a campaign starting on campaign_start will
-    roll through, ending with the cycle that coincides with monthly expiry.
-
-    Raises ValueError if campaign_start is within `min_days` of the next
-    monthly expiry (point 1 of the spec: "cannot start close to monthly
-    expiry") -- normal usage always starts on the first trading day of a
-    month, which comfortably clears this, but this guard catches misuse
-    (e.g. resuming a campaign mid-month) explicitly rather than letting it
-    silently produce a near-empty campaign.
-
-    EXCEPTION RULE (confirmed, not a guess): if the FIRST weekly cycle
-    on/after campaign_start is already at or past its own expiry-eve on
-    campaign_start itself (i.e. selling it now would require rolling it
-    the very same day), that cycle is skipped and the campaign's initial
-    funding legs are sold against the NEXT weekly cycle instead.
-    """
-    monthly_expiry, monthly_prior = get_next_expiry(calendar, campaign_start, "monthly")
-    days_to_monthly = (monthly_expiry - campaign_start).days
-    if days_to_monthly < min_days:
-        raise ValueError(
-            f"campaign_start={campaign_start} is only {days_to_monthly} day(s) before the next "
-            f"monthly expiry ({monthly_expiry}) -- below the {min_days}-day minimum runway a "
-            f"campaign needs (spec point 1: 'cannot start close to monthly expiry'). Start the "
-            f"campaign on the first trading day of the following month instead."
-        )
-
-    weekly_rows = calendar[
-        (calendar["expiry_type"] == "weekly")
-        & (calendar["expiry_date"] >= campaign_start)
-        & (calendar["expiry_date"] <= monthly_expiry)
-    ].sort_values("expiry_date")
-    cycles = list(zip(weekly_rows["expiry_date"], weekly_rows["prior_trading_day"]))
-    if not cycles:
-        raise ValueError(
-            f"No weekly expiries found between campaign_start={campaign_start} and "
-            f"monthly_expiry={monthly_expiry} -- extend expiry_calendar.csv."
-        )
-
-    if cycles[0][1] <= campaign_start:
-        cycles = cycles[1:]  # the "already at its own eve" exception rule
-    if not cycles:
-        raise ValueError(
-            f"After skipping the weekly cycle already at its own expiry-eve on "
-            f"campaign_start={campaign_start}, no weekly cycle remains before "
-            f"monthly_expiry={monthly_expiry} -- extend expiry_calendar.csv or push "
-            f"campaign_start earlier."
-        )
-    if cycles[-1][0] != monthly_expiry:
-        raise ValueError(
-            f"Calendar inconsistency: the last weekly cycle before monthly_expiry="
-            f"{monthly_expiry} is {cycles[-1][0]}, not the monthly expiry itself -- this "
-            f"campaign engine assumes monthly expiry always coincides with a weekly expiry "
-            f"date in the calendar (true for the shipped template; confirm it for whatever "
-            f"calendar you're using)."
-        )
-
-    return CampaignExpirySchedule(monthly_expiry, monthly_prior, cycles)
-
-
-def first_trading_day_of_month(year: int, month: int, holidays: set[dt.date]) -> dt.date:
-    """First actual NSE trading day of the given month -- the 1st itself
-    if that's a trading day, else the first weekday/non-holiday after it."""
-    d = dt.date(year, month, 1)
-    while not is_trading_day(d, holidays):
-        d += dt.timedelta(days=1)
-    return d
-
-
-def _next_month(year: int, month: int) -> tuple[int, int]:
-    return (year + 1, 1) if month == 12 else (year, month + 1)
+# NOTE: expiry-schedule resolution and month-chaining helpers
+# (CampaignExpirySchedule/resolve_campaign_expiry_schedule/
+# first_trading_day_of_month/_next_month) now live in campaign_common.py,
+# shared with campaign_straddle_strategy.py -- imported above under their
+# original names here so nothing else in this module (or its tests) needed
+# to change.
 
 
 # ─────────────────────────────────────────────
@@ -397,38 +317,10 @@ def _campaign_time_grid(
     return grid
 
 
-# ─────────────────────────────────────────────
-# LEG OPEN/CLOSE HELPERS
-# ─────────────────────────────────────────────
-
-def _open_leg(position, provider, action_log, tag, right, strike, expiry, quantity, as_of, reason):
-    price = provider.get_option_price(strike, right, expiry, as_of)
-    leg = Leg(
-        tag=tag, right=Right.CALL if right == "call" else Right.PUT,
-        direction=Direction.LONG if tag.startswith("long_") else Direction.SHORT,
-        strike=strike, expiry=expiry, entry_time=as_of, entry_price=price, quantity=quantity,
-    )
-    position.add_leg(leg)
-    action_log.append(
-        f"{as_of}: OPEN campaign.{tag} strike={strike} expiry={expiry} qty={quantity} "
-        f"price={price:.2f} -- {reason}"
-    )
-
-
-def _close_leg(position, provider, trade_pnls, action_log, tag, as_of, reason):
-    leg = position.get_leg(tag)
-    if leg is None:
-        return
-    price = provider.get_option_price(leg.strike, leg.right.value, leg.expiry, as_of)
-    leg.close(as_of, price)
-    trade_pnls.append(leg.pnl())
-    action_log.append(f"{as_of}: CLOSE campaign.{tag} @ {price:.2f} -- {reason}")
-
-
-def _mark_equity(position: MultiLegPosition, provider: MarketDataProvider, as_of: dt.datetime, initial_capital: float) -> float:
-    marks = {leg.tag: provider.get_option_price(leg.strike, leg.right.value, leg.expiry, as_of) for leg in position.open_legs()}
-    return initial_capital + position.total_pnl(marks)
-
+# NOTE: leg open/close/equity-mark helpers (_open_leg/_close_leg/
+# _mark_equity) now live in campaign_common.py as open_campaign_leg/
+# close_campaign_leg/mark_campaign_equity, imported above under their
+# original names here.
 
 SHORT_TAGS = ["short_call_near", "short_call_far", "short_put_near", "short_put_far"]
 LONG_TAGS = ["long_call", "long_put"]

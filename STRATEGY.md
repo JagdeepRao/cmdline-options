@@ -337,6 +337,43 @@ months (optionally sweeping the single `roll_and_close_time` — the weekly
 roll and the monthly close deliberately share ONE time-of-day knob, not
 two — across candidate times to compare `metrics.full_report()` output).
 
+### 7.1 Shared scaffolding (`campaign_common.py`)
+
+Monthly-expiry-schedule resolution (incl. the min-runway guard and the
+"already at its own eve" exception rule), month-chaining
+(`first_trading_day_of_month`/`next_month`), the weekly-eve→next-expiry
+roll map, and the leg open/close/equity-mark primitives are factored into
+`campaign_common.py`, shared by every campaign strategy — the point being
+that different campaign SHAPES can be run over the same window and
+genuinely compared, not just individually backtested. `campaign_strategy.py`
+imports these under its original names (`CampaignExpirySchedule`,
+`resolve_campaign_expiry_schedule`, etc.) so nothing about its own public
+API changed when this was factored out.
+
+### 7.2 Campaign 2: recentered straddle (`campaign_straddle_strategy.py`)
+
+A deliberately simpler counterpart to Campaign 1, built to compare against
+it directly (see `scripts/compare_campaigns.py`): buy 1× ATM call + 1× ATM
+put at MONTHLY expiry (the hedge, untouched mid-month, same discipline as
+Campaign 1's long legs); sell 1× ATM call + 1× ATM put at the nearest
+WEEKLY expiry. Every trading day, at one configurable `adjustment_time`,
+if the current put-call-parity ATM strike is more than
+`recenter_threshold_points` (100 default) away from the strike the short
+straddle currently holds, close and reopen it at the current ATM. On each
+weekly expiry-eve the short straddle rolls UNCONDITIONALLY to the next
+weekly expiry at a freshly-resolved ATM strike, regardless of the drift
+threshold (the contract is expiring either way) — an eve day always rolls,
+a non-eve day only recenters on a drift breach; these never overlap for
+the same day. Everything closes on the monthly expiry-eve, same as
+Campaign 1.
+
+`scripts/compare_campaigns.py` runs both campaigns over the same
+window(s)/data and prints a side-by-side `metrics.full_report()` table,
+optionally sweeping both campaigns' single adjustment-time knob across the
+same candidate times — this is the actual comparison being asked: is the
+funded strangle's extra complexity worth it over this simpler,
+more-frequently-adjusted straddle?
+
 ---
 
 ## 8. File map
@@ -359,6 +396,8 @@ two — across candidate times to compare `metrics.full_report()` output).
 | `nifty_backtester/metrics.py` | Equity-curve and trade-level performance metrics (Sharpe, Sortino, Calmar, drawdown, win rate, etc.) |
 | `nifty_backtester/backtest_engine.py` | Time-stepping loop that opens positions, evaluates strategies, and executes their actions bar-by-bar |
 | `nifty_backtester/campaign_strategy.py` | Funded-strangle "campaign" theta engine — a separate, monthly-cycle-rolling engine (see §7 above), not built on `AdjustmentStrategy`/`FullBacktestConfig` |
+| `nifty_backtester/campaign_common.py` | Shared scaffolding for every campaign strategy — expiry-schedule resolution, month-chaining, leg open/close/equity-mark primitives (see §7.1) |
+| `nifty_backtester/campaign_straddle_strategy.py` | Campaign 2 — sold weekly straddle / bought monthly straddle with a daily ATM-drift recenter (see §7.2) |
 | `nifty_backtester/expiry_calendar.csv` | The expiry/prior-trading-day source of truth — **shipped as an illustrative template, replace before real use**. Internally consistent with `nse_holidays.csv` (no entry lands on a weekend or listed holiday — enforced by `test_expiry_holidays.py`, not by `load_expiry_calendar()` itself). |
 | `nifty_backtester/nse_holidays.csv` | NSE trading-holiday list used by `expiry_utils.validate_calendar_against_holidays()` and `scripts/generate_expiry_calendar_candidates.py` — **best-effort (web-sourced, cross-checked across several finance sites), not an official NSE feed; re-verify before trusting real trading decisions.** |
 | `scripts/generate_expiry_calendar_candidates.py` | Generates CANDIDATE `expiry_calendar.csv` rows from `expiry_utils.WEEKLY_EXPIRY_WEEKDAY_REGIMES` (the documented Thursday→Tuesday expiry-day history) + `nse_holidays.csv`, holiday-shifting as needed. Output is for human review before pasting into `expiry_calendar.csv` — never consumed automatically; the engine still never computes an expiry date from a weekday rule. |
