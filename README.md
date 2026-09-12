@@ -28,8 +28,31 @@ expiry_calendar.csv → nifty_backtester/expiry_calendar.csv
 pip install -e . --break-system-packages
 ```
 This makes `nifty_backtester` importable everywhere and pulls in
-`breeze_connect`, `pandas`, `pyarrow`, `fastparquet`, `vollib`. Add `pytest`
-too (`pip install -e ".[dev]" --break-system-packages`) to run the test suite.
+`breeze_connect`, `pandas`, `pyarrow`, `fastparquet`, `python-dotenv`,
+`vollib`. Add `pytest` too (`pip install -e ".[dev]" --break-system-packages`)
+to run the test suite, or `pip install -e ".[live]" --break-system-packages`
+to add `kiteconnect` for the `nifty_live/` layer.
+
+## Credentials (.env)
+
+Copy `.env.example` to `.env` (already gitignored — never commit the real
+file) and fill in your Breeze and/or Kite credentials. Every script that
+needs them loads `.env` automatically via `nifty_backtester.env_loader`,
+so there's nothing to `export` by hand each session:
+
+```
+cp .env.example .env
+# edit .env with your real values
+```
+
+Both brokers' short-lived tokens need periodic refreshing — `.env.example`
+documents which lines to overwrite and how often:
+- `BREEZE_SESSION_TOKEN` — regenerated every Breeze login
+- `KITE_ACCESS_TOKEN` — regenerated every trading day (Kite Connect's
+  access tokens are valid for one day only)
+
+An explicit `export FOO=...` in your shell still takes priority over
+whatever's in `.env`, so one-off overrides work without editing the file.
 
 ## Tests
 
@@ -37,9 +60,10 @@ too (`pip install -e ".[dev]" --break-system-packages`) to run the test suite.
 pytest
 ```
 Runs everything under `tests/` against synthetic/sample data — no live
-credentials needed, no network calls. (`scripts/verify_find_atm.py` is a
-manual verification script requiring a real Breeze session; it's
-deliberately not named `test_*.py` so a bare `pytest` never picks it up.)
+credentials needed, no network calls. (`scripts/verify_find_atm.py` and
+`scripts/verify_zerodha_import.py` are manual verification scripts
+requiring a real Breeze/Zerodha session; they're deliberately not named
+`test_*.py` so a bare `pytest` never picks them up.)
 
 ## Three ways to get data — LIVE, CACHED, or SYNTHETIC
 

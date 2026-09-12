@@ -320,7 +320,9 @@ class NiftyOptionsDataBreeze:
 
 if __name__ == "__main__":
     import os
+    from nifty_backtester.env_loader import load_env  # absolute: relative imports break if this file is run directly
 
+    load_env()  # picks up BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN from a local .env if present
     API_KEY = os.environ.get("BREEZE_API_KEY", "")
     API_SECRET = os.environ.get("BREEZE_API_SECRET", "")
     SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "")

@@ -3,7 +3,9 @@ Diagnostic script — run this BEFORE trying the full data layer again.
 Prints the raw response from Breeze at each step so we can see exactly
 what's coming back, rather than guessing from an empty DataFrame.
 
-Set your credentials as environment variables first:
+Set your credentials as environment variables first, or (recommended,
+since BREEZE_SESSION_TOKEN is regenerated every login) put them in a
+local, gitignored .env file -- see .env.example at the repo root:
   export BREEZE_API_KEY="..."
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
@@ -15,6 +17,9 @@ import os
 import datetime as dt
 from breeze_connect import BreezeConnect
 
+from nifty_backtester.env_loader import load_env
+
+load_env()  # picks up BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN from a local .env if present
 API_KEY = os.environ.get("BREEZE_API_KEY", "")
 API_SECRET = os.environ.get("BREEZE_API_SECRET", "")
 SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "")

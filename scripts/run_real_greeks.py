@@ -3,7 +3,9 @@ End-to-end example: pulls a real option leg AND its matching NIFTY spot from
 Breeze, then computes real IV/Greeks — no placeholder values, everything
 comes from your actual account data.
 
-Set credentials as environment variables first:
+Set credentials as environment variables first, or (recommended, since
+BREEZE_SESSION_TOKEN is regenerated every login) put them in a local,
+gitignored .env file -- see .env.example at the repo root:
   export BREEZE_API_KEY="..."
   export BREEZE_API_SECRET="..."
   export BREEZE_SESSION_TOKEN="..."
@@ -16,7 +18,9 @@ import datetime as dt
 
 from nifty_backtester.data_layer_breeze import NiftyOptionsDataBreeze
 from nifty_backtester.pricing import add_greeks_to_option_df
+from nifty_backtester.env_loader import load_env
 
+load_env()  # picks up BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN from a local .env if present
 API_KEY = os.environ.get("BREEZE_API_KEY", "")
 API_SECRET = os.environ.get("BREEZE_API_SECRET", "")
 SESSION_TOKEN = os.environ.get("BREEZE_SESSION_TOKEN", "")
