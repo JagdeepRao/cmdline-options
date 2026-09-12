@@ -150,6 +150,29 @@ Install the optional `kiteconnect` dependency with
 `pip install -e ".[live]" --break-system-packages` (kept separate from the
 core install so backtesting-only usage never needs it).
 
+**Heads up on `kiteconnect`'s own dependency footprint:** it pulls in
+`autobahn`, `Twisted`, and `zope.interface` — none of which this codebase
+actually uses. Those exist for `KiteTicker`, kiteconnect's WEBSOCKET
+client (which needs a paid Zerodha tier you don't have); `PositionStore`
+only ever calls the plain-REST `positions()`/`instruments()` methods. But
+`kiteconnect/__init__.py` unconditionally imports `KiteTicker`, so a bare
+`import kiteconnect` — confirmed directly, not assumed — pulls in ~660
+modules and installs a **global Twisted reactor as a side effect**,
+before any `KiteConnect` instance is even created. `zope.interface` is
+Twisted's own internal dependency (see its PyPI metadata:
+"Required-by: Twisted"), not something kiteconnect chose for its own API
+and not something this codebase should adopt to match it — our existing
+duck-typed contracts (`MarketDataProvider`, `AdjustmentStrategy`, the
+`FakeKite` test double) already do what `zope.interface` would offer,
+appropriately for our small set of concrete classes rather than a
+Twisted/Zope-style plugin registry. Worth remembering before Phase 7
+(webapp integration): Twisted allows only one reactor per process, so
+anything else in that stack wanting to install its own reactor after
+`kiteconnect` has already been imported will hit
+`ReactorAlreadyInstalledError`. See `nifty_live/position_store.py`'s
+module docstring for the full trace and the mitigation options if this
+ever becomes a real constraint.
+
 Remaining phases: `chain_downloader` (periodic full-chain snapshots),
 `ReplayLiveFeed`/`live_engine` (runs the same `AdjustmentStrategy.evaluate()`
 against replayed or live bars), `BreezeWebSocketFeed`, then webapp
