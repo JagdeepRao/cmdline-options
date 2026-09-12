@@ -80,6 +80,48 @@ something else entirely -- Zerodha's data has no notion of which. Every
 discovered leg must be explicitly mapped to a (position_name, leg_tag) via
 role_map; anything left unmapped is returned to the caller as
 "unassigned" rather than guessed at.
+
+KNOWN COST -- kiteconnect DRAGS IN TWISTED + zope.interface, EVEN THOUGH
+WE NEVER USE THEM: this module only ever calls kite.positions() and
+kite.instruments() (plain REST, via the `requests` library) -- it never
+touches KiteTicker, kiteconnect's WEBSOCKET client (which you have no
+access to anyway on Zerodha's free tier). But `kiteconnect/__init__.py`
+unconditionally does `from kiteconnect.ticker import KiteTicker`, and
+KiteTicker is built on `autobahn.twisted.websocket`, which needs the
+Twisted networking framework, whose core (IProtocol/ITransport/etc.) is
+built on zope.interface. Since a package's __init__.py always runs before
+any of its submodules, there is NO way to import even the plain-REST
+`kiteconnect.connect.KiteConnect` without triggering this -- confirmed
+directly (not assumed): a bare `import kiteconnect` pulls in ~660 modules
+including all of Twisted and zope.interface, AND installs a GLOBAL
+Twisted reactor as a side effect (`twisted.internet.reactor` shows up in
+sys.modules from that import alone, before any KiteConnect/KiteTicker
+instance is ever created) -- because ticker.py's own top-level `from
+twisted.internet import reactor, ssl` triggers Twisted's default-reactor
+installation the moment it's imported.
+
+zope.interface is NOT something this codebase should adopt to "match"
+kiteconnect -- it's Twisted's own internal dependency (confirmed via
+zope.interface's PyPI metadata: "Required-by: Twisted"), not a design
+choice kiteconnect made for its own API, and our existing contracts
+(MarketDataProvider, AdjustmentStrategy, SoldLegSignalAdapter, and the
+FakeKite duck-type test double in tests/test_position_store.py) already
+get everything zope.interface would offer via plain Python duck-typing --
+appropriate for our small, closed set of concrete classes, unlike
+Twisted/Zope's large plugin-registry architecture that zope.interface was
+actually built for.
+
+PRACTICAL IMPLICATION, worth remembering before Phase 7 (webapp
+integration): Twisted allows only ONE reactor to be installed per
+process. If anything else in that stack (e.g. an asyncio-based server or
+another async library) tries to install a different reactor AFTER this
+module (or anything importing kiteconnect) has already run,
+`ReactorAlreadyInstalledError` is raised. If/when that becomes a real
+constraint, the fix is either to isolate the Zerodha-import call in its
+own subprocess, or to explicitly install Twisted's asyncio-compatible
+reactor (`twisted.internet.asyncioreactor`) FIRST, before anything else
+gets a chance to claim a different one -- not something to solve
+preemptively here, just flagged so it doesn't come as a surprise later.
 """
 
 from __future__ import annotations
