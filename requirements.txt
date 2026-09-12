@@ -3,4 +3,5 @@ fastparquet
 pandas
 pyarrow
 pytest
+python-dotenv
 vollib

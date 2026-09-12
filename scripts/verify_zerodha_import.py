@@ -21,7 +21,11 @@ Auth flow (kiteconnect, NOT the same flow as Breeze):
        data = kite.generate_session("request_token_from_step_1", api_secret="...")
        access_token = data["access_token"]
   3. Set KITE_API_KEY / KITE_ACCESS_TOKEN as environment variables and run
-     this script.
+     this script. Since access_token is regenerated every trading day,
+     the intended workflow is to put both in a local, gitignored .env
+     file (see .env.example at the repo root) and just overwrite the
+     KITE_ACCESS_TOKEN line after each login -- this script loads .env
+     automatically, so there's nothing to re-export by hand.
 
 Run (from the repo root): python3 scripts/verify_zerodha_import.py
 
@@ -35,7 +39,10 @@ import json
 
 from kiteconnect import KiteConnect
 
+from nifty_backtester.env_loader import load_env
 from nifty_live.position_store import discover_zerodha_nifty_option_legs, PositionStore
+
+load_env()  # picks up KITE_API_KEY/KITE_ACCESS_TOKEN from a local .env if present
 
 API_KEY = os.environ.get("KITE_API_KEY", "")
 ACCESS_TOKEN = os.environ.get("KITE_ACCESS_TOKEN", "")

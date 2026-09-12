@@ -12,6 +12,7 @@ dependencies = [
     "fastparquet",
     "pandas",
     "pyarrow",
+    "python-dotenv",
     "vollib",
 ]
 

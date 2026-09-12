@@ -19,12 +19,20 @@ if credentials are set, else fall back to something":
 Every returned source_label ("LIVE"/"CACHED"/"SYNTHETIC") is meant to be
 threaded through into filenames/printed output, so it's never ambiguous
 after the fact which kind of data produced a given result.
+
+BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN can come from real
+shell environment variables OR from a local, gitignored .env file (see
+env_loader.py and .env.example at the repo root) -- resolve_data_layer()
+loads .env automatically before checking for credentials, so there's
+nothing extra to do beyond keeping .env up to date after each Breeze
+login.
 """
 
 import os
 from pathlib import Path
 
 from .data_layer_cached import DEFAULT_CACHE_DIR as REAL_DATA_CACHE_DIR
+from .env_loader import load_env
 
 VALID_SOURCES = ("auto", "breeze", "cached", "synthetic")
 
@@ -54,6 +62,10 @@ def resolve_data_layer(initial_spot: float = 24500.0, prefer: str = "auto",
     """
     if prefer not in VALID_SOURCES:
         raise ValueError(f"prefer must be one of {VALID_SOURCES}, got {prefer!r}")
+
+    load_env()  # picks up BREEZE_API_KEY/BREEZE_API_SECRET/BREEZE_SESSION_TOKEN from a
+                # local .env if present -- see env_loader.py. A no-op (returns False,
+                # doesn't raise) if no .env file exists, e.g. in CI or the test suite.
 
     has_creds = _has_breeze_credentials()
     has_cache = _has_committed_cache_data(cache_dir)
