@@ -307,7 +307,39 @@ here for visibility.
 
 ---
 
-## 6. File map
+## 7. Campaign strategy: funded strangle theta engine (`campaign_strategy.py`)
+
+A distinct strategy shape, NOT built on `AdjustmentStrategy`/`FullBacktestConfig`
+(see that module's docstring for why) — a monthly "campaign" that funds a
+long strangle by selling weekly premium against it, aiming to profit from
+either theta decay (if the market stays range-bound) or a wild move (the
+long strangle pays off), while the weekly funding legs cover the cost
+either way.
+
+**Shape**: on the first trading day of the month, buy 3× ATM-ish call +
+3× ATM-ish put at MONTHLY expiry (strike chosen so each leg's premium is
+close to a target, e.g. ~200 — ITM matches are acceptable, the search
+isn't OTM-only). Fund each side independently by selling two WEEKLY
+options on that side (weekly, not monthly) — searched across every strike
+pair for the one whose combined credit clears 3× that side's long cost
+AND maximizes combined theta capture. Every week, the funding legs are
+closed and blindly re-sold at the SAME locked strikes for the next weekly
+expiry (deliberately no delta/breach defense — a locked strike going deep
+ITM as the market moves is treated as mean-reversion protection, not a
+bug). On the trading day before monthly expiry, everything closes and the
+campaign ends; a fresh one starts the following month.
+
+See `campaign_strategy.py`'s module docstring for the full algorithm,
+`resolve_campaign_expiry_schedule`'s docstring for the exact rule on
+starting a campaign whose nearest weekly cycle is already at its own
+expiry-eve, and `scripts/run_campaign_backtest.py` for running one or more
+months (optionally sweeping the single `roll_and_close_time` — the weekly
+roll and the monthly close deliberately share ONE time-of-day knob, not
+two — across candidate times to compare `metrics.full_report()` output).
+
+---
+
+## 8. File map
 
 | File | Contents |
 |---|---|
@@ -326,6 +358,7 @@ here for visibility.
 | `nifty_backtester/market_data.py` | `MarketDataProvider` abstraction (`SyntheticMarketDataProvider` / `BreezeMarketDataProvider`), proper OHLC resampling (`_resample_ohlc`) |
 | `nifty_backtester/metrics.py` | Equity-curve and trade-level performance metrics (Sharpe, Sortino, Calmar, drawdown, win rate, etc.) |
 | `nifty_backtester/backtest_engine.py` | Time-stepping loop that opens positions, evaluates strategies, and executes their actions bar-by-bar |
+| `nifty_backtester/campaign_strategy.py` | Funded-strangle "campaign" theta engine — a separate, monthly-cycle-rolling engine (see §7 above), not built on `AdjustmentStrategy`/`FullBacktestConfig` |
 | `nifty_backtester/expiry_calendar.csv` | The expiry/prior-trading-day source of truth — **shipped as an illustrative template, replace before real use**. Internally consistent with `nse_holidays.csv` (no entry lands on a weekend or listed holiday — enforced by `test_expiry_holidays.py`, not by `load_expiry_calendar()` itself). |
 | `nifty_backtester/nse_holidays.csv` | NSE trading-holiday list used by `expiry_utils.validate_calendar_against_holidays()` and `scripts/generate_expiry_calendar_candidates.py` — **best-effort (web-sourced, cross-checked across several finance sites), not an official NSE feed; re-verify before trusting real trading decisions.** |
 | `scripts/generate_expiry_calendar_candidates.py` | Generates CANDIDATE `expiry_calendar.csv` rows from `expiry_utils.WEEKLY_EXPIRY_WEEKDAY_REGIMES` (the documented Thursday→Tuesday expiry-day history) + `nse_holidays.csv`, holiday-shifting as needed. Output is for human review before pasting into `expiry_calendar.csv` — never consumed automatically; the engine still never computes an expiry date from a weekday rule. |

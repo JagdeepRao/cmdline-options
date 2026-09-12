@@ -119,6 +119,7 @@ Every script's own `--help` / docstring has the full option list and examples.
 | `debug_breeze.py` | Minimal raw-response diagnostic for a live Breeze session — run this FIRST against a real account |
 | `run_real_greeks.py` | Pulls one real option leg + matching spot and computes real IV/Greeks |
 | `verify_find_atm.py` | Manual verification of `find_atm_strike()` against a real account (not a pytest test — see Tests above) |
+| `run_campaign_backtest.py` | Runs the funded-strangle campaign strategy for one or more consecutive months, optionally sweeping the weekly-roll/monthly-close time of day to compare metrics (see STRATEGY.md §7) |
 
 ## Live monitoring (`nifty_live/`, in progress)
 
