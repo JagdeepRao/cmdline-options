@@ -62,7 +62,8 @@ CHUNK_DAYS = {
     "30minute": 90,
     "1day": 365,
 }
-REQUEST_SLEEP_SECONDS = 0.5  # conservative placeholder, not a documented Breeze rate limit
+REQUEST_SLEEP_SECONDS = 0.0  # sleep only on rate limit / error retry, not on successful requests
+RATE_LIMIT_SLEEP_SECONDS = 1.0  # sleep duration when hitting a rate limit / error
 
 
 def _breeze_date(d, time_of_day: dt.time = None) -> str:
@@ -131,11 +132,14 @@ class NiftyOptionsDataBreeze:
                     if resp.get("Success"):
                         all_rows.extend(resp["Success"])
                     elif resp.get("Error"):
-                        print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
+                        print(f"Breeze rate limit / error for {cursor} to {chunk_end}: {resp['Error']} — sleeping {RATE_LIMIT_SLEEP_SECONDS}s")
+                        time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                 except Exception as e:
-                    print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
+                    print(f"Fetch failed for {cursor} to {chunk_end}: {e} — sleeping {RATE_LIMIT_SLEEP_SECONDS}s")
+                    time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                 cursor = chunk_end + dt.timedelta(days=1)
-                time.sleep(REQUEST_SLEEP_SECONDS)
+                if REQUEST_SLEEP_SECONDS > 0:
+                    time.sleep(REQUEST_SLEEP_SECONDS)
             return pd.DataFrame(all_rows)
 
         return self._cache.get(cache_key, from_date, to_date, fetch_fn)
@@ -169,11 +173,14 @@ class NiftyOptionsDataBreeze:
                     if resp.get("Success"):
                         all_rows.extend(resp["Success"])
                     elif resp.get("Error"):
-                        print(f"Breeze error for {cursor} to {chunk_end}: {resp['Error']}")
+                        print(f"Breeze rate limit / error for {cursor} to {chunk_end}: {resp['Error']} — sleeping {RATE_LIMIT_SLEEP_SECONDS}s")
+                        time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                 except Exception as e:
-                    print(f"Fetch failed for {cursor} to {chunk_end}: {e}")
+                    print(f"Fetch failed for {cursor} to {chunk_end}: {e} — sleeping {RATE_LIMIT_SLEEP_SECONDS}s")
+                    time.sleep(RATE_LIMIT_SLEEP_SECONDS)
                 cursor = chunk_end + dt.timedelta(days=1)
-                time.sleep(REQUEST_SLEEP_SECONDS)
+                if REQUEST_SLEEP_SECONDS > 0:
+                    time.sleep(REQUEST_SLEEP_SECONDS)
             return pd.DataFrame(all_rows)
 
         return self._cache.get(cache_key, from_date, to_date, fetch_fn)
