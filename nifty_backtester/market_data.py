@@ -11,6 +11,24 @@ import pandas as pd
 
 from .pricing import solve_iv_and_greeks, time_to_expiry_years
 
+# How many calendar days BreezeMarketDataProvider will step BACKWARD (never
+# forward -- see _most_recent_price_at_or_before) looking for a usable
+# print when the requested day has none. Real-world boundary conditions
+# this exists for (both found via a live run, not hypothesized):
+#   1. The last 1-minute candle of an NSE session is timestamped 15:29,
+#      not 15:30 -- querying exactly at market close (a common
+#      roll/close/adjustment time) used to raise if that specific day's
+#      fetch came back empty, rather than falling back to the most recent
+#      prior print.
+#   2. A given strike genuinely may not trade at all on a given day (thin
+#      OTM/ITM weeklies especially) -- Breeze then returns zero rows for
+#      that whole day, not just a gap at one timestamp.
+# Both surfaced as the same failure mode (a hard ValueError mid-backtest),
+# and both apply equally to a live/replay run (nifty_live.replay_feed and
+# a real live session both go through this same provider) -- so the fix
+# lives here once, not duplicated per caller.
+DEFAULT_MAX_STALE_LOOKBACK_DAYS = 5
+
 
 def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
     """Proper OHLC resample (open=first, high=max, low=min, close=last,
@@ -38,6 +56,54 @@ def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
     if "volume" in df.columns:
         agg["volume"] = "sum"
     return df.resample(f"{freq_minutes}min").agg(agg).dropna(how="all").reset_index()
+
+
+def _most_recent_price_at_or_before(
+    fetch_fn, as_of: dt.datetime, label: str, max_lookback_days: int = DEFAULT_MAX_STALE_LOOKBACK_DAYS,
+) -> float:
+    """Returns the close of the most recent bar AT OR BEFORE as_of, never
+    after (a bar timestamped after as_of is look-ahead, full stop, even if
+    it happens to be numerically "nearest" -- the bug this replaces used
+    nearest-by-absolute-distance, which could silently pick a future bar).
+
+    fetch_fn(from_date, to_date) -> DataFrame with 'datetime'/'close' for
+    ONE calendar day (from_date == to_date on every call this makes).
+    Tries as_of's own date first; if that day has no bar at/before as_of
+    (empty fetch, or every bar on that day is after as_of -- both are real
+    situations, not just hypothetical: see DEFAULT_MAX_STALE_LOOKBACK_DAYS'
+    docstring), walks backward one day at a time, up to max_lookback_days,
+    and uses the most recent print it finds. Prints a warning whenever a
+    non-same-day (stale) price gets used, so a backtest/live run's output
+    stays auditable rather than silently treating a days-old print as
+    fresh. Raises ValueError if nothing turns up within the lookback
+    window at all.
+    """
+    for days_back in range(max_lookback_days + 1):
+        query_date = as_of.date() - dt.timedelta(days=days_back)
+        df = fetch_fn(query_date, query_date)
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df[df["datetime"] <= as_of]  # never use a bar from AFTER as_of
+        if df.empty:
+            continue
+        idx = df["datetime"].idxmax()  # most recent print at/before as_of
+        if days_back > 0:
+            print(
+                f"[market_data] {label}: no usable bar at/before {as_of} on {as_of.date()} -- "
+                f"falling back to the last available print from {query_date} "
+                f"({df.loc[idx, 'datetime']}), {days_back} day(s) stale. Treat this bar with "
+                f"extra caution -- it reflects whatever the market last did on {query_date}, "
+                f"not {as_of.date()}."
+            )
+        return float(df.loc[idx, "close"])
+
+    raise ValueError(
+        f"{label}: no usable data at or before {as_of}, even after looking back "
+        f"{max_lookback_days} calendar day(s). Widen max_lookback_days if this is a genuinely "
+        f"thin contract, or double-check the strike/expiry/date are actually valid."
+    )
 
 
 class MarketDataProvider:
@@ -151,28 +217,23 @@ class SyntheticMarketDataProvider(MarketDataProvider):
 
 
 class BreezeMarketDataProvider(MarketDataProvider):
-    def __init__(self, breeze_data_layer, r: float = 0.0525, q: float = 0.012):
+    def __init__(self, breeze_data_layer, r: float = 0.0525, q: float = 0.012,
+                 max_stale_lookback_days: int = DEFAULT_MAX_STALE_LOOKBACK_DAYS):
         self.data = breeze_data_layer
         self.r = r
         self.q = q
+        self.max_stale_lookback_days = max_stale_lookback_days
 
     def get_spot(self, as_of: dt.datetime) -> float:
-        window_start = as_of - dt.timedelta(minutes=5)
-        df = self.data.get_index_historical(window_start.date(), as_of.date(), interval="1minute")
-        if df.empty:
-            raise ValueError(f"No spot data available around {as_of}")
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        idx = (df["datetime"] - as_of).abs().idxmin()
-        return float(df.loc[idx, "close"])
+        def fetch_fn(from_date, to_date):
+            return self.data.get_index_historical(from_date, to_date, interval="1minute")
+        return _most_recent_price_at_or_before(fetch_fn, as_of, "spot", self.max_stale_lookback_days)
 
     def get_option_price(self, strike: float, right: str, expiry: dt.date, as_of: dt.datetime) -> float:
-        window_start = as_of - dt.timedelta(minutes=5)
-        df = self.data.get_option_historical(expiry, int(strike), right.lower(), window_start.date(), as_of.date(), interval="1minute")
-        if df.empty:
-            raise ValueError(f"No option data available for strike={strike} right={right} expiry={expiry} around {as_of}")
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        idx = (df["datetime"] - as_of).abs().idxmin()
-        return float(df.loc[idx, "close"])
+        def fetch_fn(from_date, to_date):
+            return self.data.get_option_historical(expiry, int(strike), right.lower(), from_date, to_date, interval="1minute")
+        label = f"strike={strike} right={right} expiry={expiry}"
+        return _most_recent_price_at_or_before(fetch_fn, as_of, label, self.max_stale_lookback_days)
 
     def find_atm_strike(self, expiry: dt.date, as_of: dt.datetime, strike_step: int = 100) -> int:
         spot = self.get_spot(as_of)
