@@ -92,89 +92,104 @@ def _most_recent_price_at_or_before(
     fetch_fn, as_of: dt.datetime, label: str, max_lookback_days: int = DEFAULT_MAX_STALE_LOOKBACK_DAYS,
     daily_fallback_fn=None,
 ) -> float:
-    """Returns the close of the most recent bar AT OR BEFORE as_of, never
-    after (a bar timestamped after as_of is look-ahead, full stop, even if
-    it happens to be numerically "nearest" -- the bug this replaces used
-    nearest-by-absolute-distance, which could silently pick a future bar).
-
-    fetch_fn(from_date, to_date) -> DataFrame with 'datetime'/'close' for
-    ONE calendar day (from_date == to_date on every call this makes).
-    Tries as_of's own date first; if that day has no bar at/before as_of
-    (empty fetch, or every bar on that day is after as_of -- both are real
-    situations, not just hypothetical: see DEFAULT_MAX_STALE_LOOKBACK_DAYS'
-    docstring), walks backward one day at a time, up to max_lookback_days,
-    and uses the most recent print it finds. Prints a warning whenever a
-    non-same-day (stale) price gets used, so a backtest/live run's output
-    stays auditable rather than silently treating a days-old print as
-    fresh. Raises ValueError if nothing turns up within the lookback
-    window at all.
+    """Returns the close of the most recent bar AT OR BEFORE as_of, never after.
+    Fetches the full lookback range [as_of - max_lookback_days .. as_of] in a
+    single call so the underlying DataCache satisfies the request from Parquet
+    cache without issuing repeated day-by-day API queries. Handles bounded
+    data layers (ScenarioBoundedDataLayer) gracefully by catching bound violations.
     """
-    for days_back in range(max_lookback_days + 1):
-        query_date = as_of.date() - dt.timedelta(days=days_back)
-        df = fetch_fn(query_date, query_date)
-        if df is None or df.empty:
-            if days_back == 0 and daily_fallback_fn is not None:
-                try:
-                    daily_df = daily_fallback_fn(as_of.date(), as_of.date())
-                    if daily_df is not None and not daily_df.empty:
-                        daily_df = daily_df.copy()
-                        daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
-                        close_price = float(daily_df.iloc[-1]["close"])
-                        print(
-                            f"[market_data] {label}: no 1-minute intraday bar at/before {as_of} on {as_of.date()} -- "
-                            f"using official NSE daily closing price ({close_price:.2f}) from 1day candle for {as_of.date()}."
-                        )
-                        return close_price
-                except Exception:
-                    pass
-            continue
+    start_date = as_of.date() - dt.timedelta(days=max_lookback_days)
+    end_date = as_of.date()
+
+    try:
+        df = fetch_fn(start_date, end_date)
+    except Exception:
+        df = None
+
+    if df is None or df.empty:
+        # Fall back to day-by-day lookup within bounds if wide fetch failed or was bounded out
+        for days_back in range(max_lookback_days + 1):
+            query_date = as_of.date() - dt.timedelta(days=days_back)
+            try:
+                df_day = fetch_fn(query_date, query_date)
+            except Exception:
+                continue
+            if df_day is None or df_day.empty:
+                continue
+            df_day = df_day.copy()
+            df_day["datetime"] = pd.to_datetime(df_day["datetime"])
+            if "status" in df_day.columns:
+                df_day = df_day[df_day["status"] != "NO_TRADES"]
+            if "close" in df_day.columns:
+                df_day = df_day[df_day["close"].notna()]
+            if days_back == 0 and as_of.time() >= dt.time(15, 30):
+                cutoff = max(as_of, dt.datetime.combine(as_of.date(), dt.time(15, 40)))
+            elif days_back > 0:
+                cutoff = dt.datetime.combine(query_date, dt.time(23, 59, 59))
+            else:
+                cutoff = as_of
+            df_day_filtered = df_day[df_day["datetime"] <= cutoff]
+            if not df_day_filtered.empty:
+                idx = df_day_filtered["datetime"].idxmax()
+                latest_row = df_day_filtered.loc[idx]
+                return float(latest_row["close"])
+        df = pd.DataFrame()
+    if df is not None and not df.empty:
         df = df.copy()
         df["datetime"] = pd.to_datetime(df["datetime"])
 
-        if days_back == 0 and as_of.time() >= dt.time(15, 30):
-            # Market close query on the same day: allow bars up to 15:40 on as_of.date()
-            # to capture NSE post-market closing/settlement prints (e.g. 15:39:00)
+        # Filter out NO_TRADES sentinel rows and invalid/NaN prices
+        if "status" in df.columns:
+            df = df[df["status"] != "NO_TRADES"]
+        if "close" in df.columns:
+            df = df[df["close"].notna()]
+
+        # Apply market close cutoff for as_of.date() (up to 15:40 on as_of.date())
+        if as_of.time() >= dt.time(15, 30):
             cutoff = max(as_of, dt.datetime.combine(as_of.date(), dt.time(15, 40)))
-            df_filtered = df[df["datetime"] <= cutoff]
-        elif days_back > 0:
-            # Prior day fallback: any bar on that prior day is before as_of
-            df_filtered = df[df["datetime"] <= dt.datetime.combine(query_date, dt.time(23, 59, 59))]
         else:
-            df_filtered = df[df["datetime"] <= as_of]
+            cutoff = as_of
 
-        if df_filtered.empty:
-            if days_back == 0 and daily_fallback_fn is not None:
-                # Same-day intraday 1-min fetch had no bars at/before as_of (e.g. missing 3:30 / 15:30 candle).
-                # Query official daily 1day candle for as_of.date() before stepping back to prior days.
-                try:
-                    daily_df = daily_fallback_fn(as_of.date(), as_of.date())
-                    if daily_df is not None and not daily_df.empty:
-                        daily_df = daily_df.copy()
-                        daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
-                        close_price = float(daily_df.iloc[-1]["close"])
-                        print(
-                            f"[market_data] {label}: no 15:30 1-minute intraday candle on {as_of.date()} -- "
-                            f"using 1day closing price ({close_price:.2f}) marked as '1DAYCLOSING' status."
-                        )
-                        return close_price
-                except Exception:
-                    pass
-            continue
+        df_filtered = df[df["datetime"] <= cutoff]
+        if not df_filtered.empty:
+            idx = df_filtered["datetime"].idxmax()
+            latest_row = df_filtered.loc[idx]
+            match_ts = pd.to_datetime(latest_row["datetime"])
+            match_date = match_ts.date()
 
-        idx = df_filtered["datetime"].idxmax()  # most recent print
-        if days_back > 0:
-            trading_stale = _count_trading_days_between(query_date, as_of.date())
-            stale_str = f"{trading_stale} trading day(s) stale"
-            if days_back != trading_stale:
-                stale_str += f" ({days_back} calendar days)"
-            print(
-                f"[market_data] {label}: no usable bar at/before {as_of} on {as_of.date()} -- "
-                f"falling back to the last available print from {query_date} "
-                f"({df_filtered.loc[idx, 'datetime']}), {stale_str}. Treat this bar with "
-                f"extra caution -- it reflects whatever the market last did on {query_date}, "
-                f"not {as_of.date()}."
-            )
-        return float(df_filtered.loc[idx, "close"])
+            days_back = (as_of.date() - match_date).days
+            if days_back > 0:
+                trading_stale = _count_trading_days_between(match_date, as_of.date())
+                stale_str = f"{trading_stale} trading day(s) stale"
+                if days_back != trading_stale:
+                    stale_str += f" ({days_back} calendar days)"
+                print(
+                    f"[market_data] {label}: no usable bar at/before {as_of} on {as_of.date()} -- "
+                    f"falling back to the last available print from {match_date} "
+                    f"({match_ts}), {stale_str}. Treat this bar with "
+                    f"extra caution -- it reflects whatever the market last did on {match_date}, "
+                    f"not {as_of.date()}."
+                )
+            return float(latest_row["close"])
+
+    # If same-day intraday 1min bars are missing or empty, attempt same-day 1day daily candle
+    if daily_fallback_fn is not None:
+        try:
+            daily_df = daily_fallback_fn(as_of.date(), as_of.date())
+            if daily_df is not None and not daily_df.empty:
+                daily_df = daily_df.copy()
+                daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
+                if "status" in daily_df.columns:
+                    daily_df = daily_df[daily_df["status"] != "NO_TRADES"]
+                if "close" in daily_df.columns and not daily_df["close"].dropna().empty:
+                    close_price = float(daily_df["close"].dropna().iloc[-1])
+                    print(
+                        f"[market_data] {label}: no 15:30 1-minute intraday candle on {as_of.date()} -- "
+                        f"using 1day closing price ({close_price:.2f}) marked as '1DAYCLOSING' status."
+                    )
+                    return close_price
+        except Exception:
+            pass
 
     raise ValueError(
         f"{label}: no usable data at or before {as_of}, even after looking back "

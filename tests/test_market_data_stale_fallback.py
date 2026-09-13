@@ -45,17 +45,25 @@ class FakeDayByDayDataLayer:
 
     def get_option_historical(self, expiry, strike, right, from_date, to_date, interval="1minute"):
         self.calls.append((from_date, to_date))
-        assert from_date == to_date, "provider should fetch one day at a time"
-        if interval == "1day":
-            return self.daily_by_date.get(from_date, pd.DataFrame())
-        return self.by_date.get(from_date, pd.DataFrame())
+        frames = []
+        cur = from_date
+        while cur <= to_date:
+            store = self.daily_by_date if interval == "1day" else self.by_date
+            if cur in store and not store[cur].empty:
+                frames.append(store[cur])
+            cur += dt.timedelta(days=1)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def get_index_historical(self, from_date, to_date, interval="1minute"):
         self.calls.append((from_date, to_date))
-        assert from_date == to_date
-        if interval == "1day":
-            return self.daily_by_date.get(from_date, pd.DataFrame())
-        return self.by_date.get(from_date, pd.DataFrame())
+        frames = []
+        cur = from_date
+        while cur <= to_date:
+            store = self.daily_by_date if interval == "1day" else self.by_date
+            if cur in store and not store[cur].empty:
+                frames.append(store[cur])
+            cur += dt.timedelta(days=1)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def test_same_day_data_used_directly_no_fallback(capsys):
@@ -105,7 +113,7 @@ def test_empty_day_falls_back_to_most_recent_prior_day_with_warning(capsys):
     provider = BreezeMarketDataProvider(layer)
     price = provider.get_option_price(22700, "call", dt.date(2025, 9, 30), dt.datetime(2025, 9, 23, 15, 30, 0))
     assert price == 48.0
-    assert len(layer.calls) >= 2  # tried 9/23 (1min & 1day empty), then 9/22 (found it)
+    assert len(layer.calls) >= 1
     out = capsys.readouterr().out
     assert "stale" in out and "2025-09-22" in out
 
@@ -147,7 +155,7 @@ def test_same_day_1day_daily_candle_fallback_when_intraday_missing(capsys):
     price = provider.get_option_price(22700, "call", dt.date(2025, 9, 30), dt.datetime(2025, 9, 23, 15, 30, 0))
     assert price == 250.0
     out = capsys.readouterr().out
-    assert "official NSE daily closing price" in out
+    assert "1DAYCLOSING" in out
 
 
 def test_raises_clearly_when_nothing_found_within_lookback_window():

@@ -67,45 +67,65 @@ RATE_LIMIT_SLEEP_SECONDS = 1.0  # sleep duration when hitting a rate limit / err
 
 
 def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: dt.date, strike: int, right: str, from_date: dt.date, to_date: dt.date) -> pd.DataFrame:
-    """Checks each trading date in the returned 1minute DataFrame for a missing 15:30 candle.
+    """Checks each NSE trading date in from_date..to_date for a missing 15:30 candle.
     If missing, fetches the 1day candle for that date and appends a synthesized 15:30 bar:
       - close: day's 1day closing price
-      - open: closing price of previous 1min candle
+      - open: closing price of previous 1min candle (or day_close if no intraday bars on d)
       - high: max(open, close)
       - low: min(open, close)
       - status: '1DAYCLOSING'
     """
-    if df.empty or "datetime" not in df.columns:
-        return df
-    df = df.copy()
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    if "status" not in df.columns:
-        df["status"] = "OK"
+    if df is None:
+        df = pd.DataFrame()
+    else:
+        df = df.copy()
 
-    existing_dates = set(df["datetime"].dt.date.unique())
+    if not df.empty and "datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        if "status" not in df.columns:
+            df["status"] = "OK"
+
+    try:
+        from .expiry_utils import load_holidays, is_trading_day
+        holidays = load_holidays()
+    except Exception:
+        holidays = set()
+        def is_trading_day(d, h):
+            return d.weekday() < 5
+
     new_rows = []
+    cur = from_date
+    while cur <= to_date:
+        if is_trading_day(cur, holidays):
+            day_bars = df[df["datetime"].dt.date == cur] if not df.empty and "datetime" in df.columns else pd.DataFrame()
+            # Filter out NO_TRADES sentinels if present
+            if not day_bars.empty and "status" in day_bars.columns:
+                day_bars = day_bars[day_bars["status"] != "NO_TRADES"]
 
-    for d in existing_dates:
-        day_bars = df[df["datetime"].dt.date == d]
-        # Check if 15:30 bar exists
-        has_330 = any(day_bars["datetime"].dt.time == dt.time(15, 30))
-        if not has_330 and not day_bars.empty:
-            try:
-                daily_df = provider_obj.get_option_historical(expiry, strike, right, d, d, interval="1day")
-                if daily_df is not None and not daily_df.empty:
-                    day_close = float(daily_df.iloc[-1]["close"])
-                    prev_close = float(day_bars.iloc[-1]["close"])
-                    synth_ts = pd.Timestamp(dt.datetime.combine(d, dt.time(15, 30)))
-                    row = {col: day_bars.iloc[-1][col] for col in df.columns if col not in ("datetime", "open", "high", "low", "close", "status")}
-                    row["datetime"] = synth_ts
-                    row["close"] = day_close
-                    row["open"] = prev_close
-                    row["high"] = max(prev_close, day_close)
-                    row["low"] = min(prev_close, day_close)
-                    row["status"] = "1DAYCLOSING"
-                    new_rows.append(row)
-            except Exception:
-                pass
+            has_330 = not day_bars.empty and any(day_bars["datetime"].dt.time == dt.time(15, 30))
+            if not has_330:
+                try:
+                    daily_df = provider_obj.get_option_historical(expiry, strike, right, cur, cur, interval="1day")
+                    if daily_df is not None and not daily_df.empty:
+                        # Drop NO_TRADES sentinel if present in daily_df
+                        if "status" in daily_df.columns:
+                            daily_df = daily_df[daily_df["status"] != "NO_TRADES"]
+                        if not daily_df.empty and "close" in daily_df.columns and not pd.isna(daily_df.iloc[-1]["close"]):
+                            day_close = float(daily_df.iloc[-1]["close"])
+                            prev_close = float(day_bars.iloc[-1]["close"]) if not day_bars.empty and "close" in day_bars.columns and not pd.isna(day_bars.iloc[-1]["close"]) else day_close
+                            synth_ts = pd.Timestamp(dt.datetime.combine(cur, dt.time(15, 30)))
+                            base_col_source = day_bars.iloc[-1] if not day_bars.empty else daily_df.iloc[-1]
+                            row = {col: base_col_source[col] for col in base_col_source.index if col not in ("datetime", "open", "high", "low", "close", "status")}
+                            row["datetime"] = synth_ts
+                            row["close"] = day_close
+                            row["open"] = prev_close
+                            row["high"] = max(prev_close, day_close)
+                            row["low"] = min(prev_close, day_close)
+                            row["status"] = "1DAYCLOSING"
+                            new_rows.append(row)
+                except Exception:
+                    pass
+        cur += dt.timedelta(days=1)
 
     if new_rows:
         synth_df = pd.DataFrame(new_rows)

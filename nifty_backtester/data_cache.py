@@ -90,6 +90,14 @@ class DataCache:
 
         missing_ranges = self._find_missing_ranges(cached, from_date, to_date)
 
+        try:
+            from .expiry_utils import load_holidays, is_trading_day
+            holidays = load_holidays()
+        except Exception:
+            holidays = set()
+            def is_trading_day(d, h):
+                return d.weekday() < 5
+
         frames = [cached] if not cached.empty else []
         for gap_start, gap_end in missing_ranges:
             fetched = self._fetch_with_retry(fetch_fn, gap_start, gap_end, cache_key)
@@ -97,21 +105,42 @@ class DataCache:
                 fetched = fetched.copy()
                 fetched["datetime"] = pd.to_datetime(fetched["datetime"])
                 frames.append(fetched)
+            else:
+                # Missing range returned no data (empty day / no trades).
+                # Generate sentinel rows for each trading date in gap_start..gap_end
+                # so Parquet cache records coverage and avoids repeated API re-fetches.
+                sentinel_rows = []
+                cur = gap_start
+                while cur <= gap_end:
+                    if is_trading_day(cur, holidays):
+                        sentinel_rows.append({
+                            "datetime": pd.Timestamp(dt.datetime.combine(cur, dt.time(15, 30))),
+                            "status": "NO_TRADES",
+                            "close": float("nan"),
+                        })
+                    cur += dt.timedelta(days=1)
+                if sentinel_rows:
+                    frames.append(pd.DataFrame(sentinel_rows))
 
         if not frames:
-            return cached  # nothing cached, nothing fetched (e.g. fetch returned empty)
+            return cached
 
         combined = pd.concat(frames, ignore_index=True)
         combined = combined.drop_duplicates(subset="datetime").sort_values("datetime").reset_index(drop=True)
 
-        if missing_ranges:  # only re-write the cache file if we actually fetched something new
+        if missing_ranges:  # re-write cache file so edge coverage & NO_TRADES sentinels are persisted
             combined.to_parquet(cache_path)
 
+        # Exclude sentinel NO_TRADES rows when returning result slice
+        valid_df = combined
+        if "status" in valid_df.columns:
+            valid_df = valid_df[valid_df["status"] != "NO_TRADES"]
+
         mask = (
-            (combined["datetime"] >= pd.Timestamp(from_date))
-            & (combined["datetime"] < pd.Timestamp(to_date) + pd.Timedelta(days=1))
+            (valid_df["datetime"] >= pd.Timestamp(from_date))
+            & (valid_df["datetime"] < pd.Timestamp(to_date) + pd.Timedelta(days=1))
         )
-        return combined[mask].reset_index(drop=True)
+        return valid_df[mask].reset_index(drop=True)
 
     def _fetch_with_retry(
         self,
