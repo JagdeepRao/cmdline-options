@@ -46,6 +46,45 @@ def test_cache_miss_then_hit(tmp_path):
     assert len(result2) == len(result1)
 
 
+def test_status_column_persisted_in_cache(tmp_path):
+    cache = DataCache(tmp_path)
+    def fetch_fn(fd, td):
+        return pd.DataFrame({
+            "datetime": [pd.Timestamp("2024-01-04 15:30:00")],
+            "close": [150.0],
+            "status": ["1DAYCLOSING"],
+        })
+
+    res1 = cache.get("STATUS_KEY", dt.date(2024, 1, 4), dt.date(2024, 1, 4), fetch_fn)
+    assert "status" in res1.columns
+    assert res1["status"].iloc[0] == "1DAYCLOSING"
+
+    # Subsequent cache hit retains status
+    res2 = cache.get("STATUS_KEY", dt.date(2024, 1, 4), dt.date(2024, 1, 4), lambda fd, td: None)
+    assert "status" in res2.columns
+    assert res2["status"].iloc[0] == "1DAYCLOSING"
+
+
+def test_adjacent_weekend_or_holiday_gap_does_not_trigger_fetch(tmp_path):
+    cache = DataCache(tmp_path)
+    # Friday 2024-01-05 data
+    seed = pd.DataFrame({
+        "datetime": [pd.Timestamp("2024-01-05 15:30:00")],
+        "close": [100.0],
+    })
+    seed.to_parquet(tmp_path / "KEY.parquet")
+
+    fetched_ranges = []
+    def fake_fetch(fd, td):
+        fetched_ranges.append((fd, td))
+        return pd.DataFrame()
+
+    # Query from Friday 2024-01-05 through Sunday 2024-01-07 (Jan 6-7 weekend gap)
+    res = cache.get("KEY", dt.date(2024, 1, 5), dt.date(2024, 1, 7), fake_fetch)
+    assert not res.empty
+    assert len(fetched_ranges) == 0, "Weekend gap should not trigger a fetch"
+
+
 def test_edge_extension_only_fetches_missing_tail(tmp_path):
     cache = DataCache(tmp_path)
     calls = []

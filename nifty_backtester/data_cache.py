@@ -178,11 +178,33 @@ class DataCache:
         cached_min = cached["datetime"].min().date()
         cached_max = cached["datetime"].max().date()
 
+        try:
+            from .expiry_utils import load_holidays, is_trading_day
+            holidays = load_holidays()
+        except Exception:
+            holidays = set()
+            def is_trading_day(d, h):
+                return d.weekday() < 5
+
+        def _has_trading_day(start: dt.date, end: dt.date) -> bool:
+            cur = start
+            while cur <= end:
+                if is_trading_day(cur, holidays):
+                    return True
+                cur += dt.timedelta(days=1)
+            return False
+
         missing = []
         if from_date < cached_min:
-            missing.append((from_date, cached_min - dt.timedelta(days=1)))
+            gap_start = from_date
+            gap_end = cached_min - dt.timedelta(days=1)
+            if _has_trading_day(gap_start, gap_end):
+                missing.append((gap_start, gap_end))
         if to_date > cached_max:
-            missing.append((cached_max + dt.timedelta(days=1), to_date))
+            gap_start = cached_max + dt.timedelta(days=1)
+            gap_end = to_date
+            if _has_trading_day(gap_start, gap_end):
+                missing.append((gap_start, gap_end))
         return missing
 
     def clear(self, cache_key: str) -> None:
