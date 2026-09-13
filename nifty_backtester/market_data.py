@@ -30,7 +30,7 @@ from .pricing import solve_iv_and_greeks, time_to_expiry_years
 # All surface as boundary conditions, and all apply equally to a live/replay
 # run (nifty_live.replay_feed and a real live session both go through this
 # same provider) -- so the fix lives here once, not duplicated per caller.
-DEFAULT_MAX_STALE_LOOKBACK_DAYS = 5
+DEFAULT_MAX_STALE_LOOKBACK_DAYS = 15
 
 
 def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
