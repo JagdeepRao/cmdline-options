@@ -144,7 +144,7 @@ def _most_recent_price_at_or_before(
 
         if df_filtered.empty:
             if days_back == 0 and daily_fallback_fn is not None:
-                # Same-day intraday 1-min fetch had no bars at/before as_of.
+                # Same-day intraday 1-min fetch had no bars at/before as_of (e.g. missing 3:30 / 15:30 candle).
                 # Query official daily 1day candle for as_of.date() before stepping back to prior days.
                 try:
                     daily_df = daily_fallback_fn(as_of.date(), as_of.date())
@@ -153,8 +153,8 @@ def _most_recent_price_at_or_before(
                         daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
                         close_price = float(daily_df.iloc[-1]["close"])
                         print(
-                            f"[market_data] {label}: no 1-minute intraday bar at/before {as_of} on {as_of.date()} -- "
-                            f"using official NSE daily closing price ({close_price:.2f}) from 1day candle for {as_of.date()}."
+                            f"[market_data] {label}: no 15:30 1-minute intraday candle on {as_of.date()} -- "
+                            f"using 1day closing price ({close_price:.2f}) marked as '1DAYCLOSING' status."
                         )
                         return close_price
                 except Exception:

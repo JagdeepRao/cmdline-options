@@ -66,6 +66,49 @@ REQUEST_SLEEP_SECONDS = 0.0  # sleep only on rate limit / error retry, not on su
 RATE_LIMIT_SLEEP_SECONDS = 1.0  # sleep duration when hitting a rate limit / error
 
 
+def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: dt.date, strike: int, right: str, from_date: dt.date, to_date: dt.date) -> pd.DataFrame:
+    """Checks each trading date in the returned 1minute DataFrame for a missing 15:30 candle.
+    If missing, fetches the 1day candle for that date and appends a synthesized 15:30 bar
+    tagged with status='1DAYCLOSING' so downstream cache/audit logic tracks it."""
+    if df.empty or "datetime" not in df.columns:
+        return df
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    if "status" not in df.columns:
+        df["status"] = "OK"
+
+    existing_dates = set(df["datetime"].dt.date.unique())
+    new_rows = []
+
+    for d in existing_dates:
+        day_bars = df[df["datetime"].dt.date == d]
+        # Check if 15:30 bar exists
+        has_330 = any(day_bars["datetime"].dt.time == dt.time(15, 30))
+        if not has_330:
+            try:
+                daily_df = provider_obj.get_option_historical(expiry, strike, right, d, d, interval="1day")
+                if daily_df is not None and not daily_df.empty:
+                    close_val = float(daily_df.iloc[-1]["close"])
+                    synth_ts = pd.Timestamp(dt.datetime.combine(d, dt.time(15, 30)))
+                    row = {col: day_bars.iloc[-1][col] for col in df.columns if col not in ("datetime", "close", "status")}
+                    row["datetime"] = synth_ts
+                    row["close"] = close_val
+                    row["open"] = close_val
+                    row["high"] = close_val
+                    row["low"] = close_val
+                    row["status"] = "1DAYCLOSING"
+                    new_rows.append(row)
+            except Exception:
+                pass
+
+    if new_rows:
+        synth_df = pd.DataFrame(new_rows)
+        df = pd.concat([df, synth_df], ignore_index=True)
+        df = df.sort_values("datetime").reset_index(drop=True)
+
+    return df
+
+
 def _breeze_date(d, time_of_day: dt.time = None) -> str:
     """Formats a date/datetime into Breeze's expected ISO string.
 
@@ -140,7 +183,13 @@ class NiftyOptionsDataBreeze:
                 cursor = chunk_end + dt.timedelta(days=1)
                 if REQUEST_SLEEP_SECONDS > 0:
                     time.sleep(REQUEST_SLEEP_SECONDS)
-            return pd.DataFrame(all_rows)
+
+            df = pd.DataFrame(all_rows)
+            # If interval is 1minute and 15:30 candle is missing for a trading day,
+            # supply the missing 15:30 bar from 1day candle with status='1DAYCLOSING'
+            if interval == "1minute" and not df.empty:
+                df = _supplement_missing_closing_candles(self, df, expiry, strike, right, fd, td)
+            return df
 
         return self._cache.get(cache_key, from_date, to_date, fetch_fn)
 
