@@ -166,6 +166,10 @@ class NiftyOptionsDataBreeze:
             cursor = fd
             while cursor <= td:
                 chunk_end = min(cursor + dt.timedelta(days=chunk_days), td)
+                print(
+                    f"[Breeze Download] Option: strike={strike}, right={right}, expiry={expiry}, "
+                    f"interval={interval}, date_range={cursor}..{chunk_end}"
+                )
                 try:
                     resp = self.breeze.get_historical_data_v2(
                         interval=interval,
@@ -216,6 +220,9 @@ class NiftyOptionsDataBreeze:
             cursor = fd
             while cursor <= td:
                 chunk_end = min(cursor + dt.timedelta(days=chunk_days), td)
+                print(
+                    f"[Breeze Download] Index: interval={interval}, date_range={cursor}..{chunk_end}"
+                )
                 try:
                     resp = self.breeze.get_historical_data_v2(
                         interval=interval,
