@@ -38,18 +38,23 @@ class FakeDayByDayDataLayer:
     calendar date, returning an empty frame for any date not seeded,
     exactly mimicking a real illiquid-contract/no-trades day."""
 
-    def __init__(self, by_date: dict[dt.date, pd.DataFrame]):
+    def __init__(self, by_date: dict[dt.date, pd.DataFrame], daily_by_date: dict[dt.date, pd.DataFrame] = None):
         self.by_date = by_date
+        self.daily_by_date = daily_by_date or {}
         self.calls: list[tuple[dt.date, dt.date]] = []
 
     def get_option_historical(self, expiry, strike, right, from_date, to_date, interval="1minute"):
         self.calls.append((from_date, to_date))
         assert from_date == to_date, "provider should fetch one day at a time"
+        if interval == "1day":
+            return self.daily_by_date.get(from_date, pd.DataFrame())
         return self.by_date.get(from_date, pd.DataFrame())
 
     def get_index_historical(self, from_date, to_date, interval="1minute"):
         self.calls.append((from_date, to_date))
         assert from_date == to_date
+        if interval == "1day":
+            return self.daily_by_date.get(from_date, pd.DataFrame())
         return self.by_date.get(from_date, pd.DataFrame())
 
 
@@ -100,7 +105,7 @@ def test_empty_day_falls_back_to_most_recent_prior_day_with_warning(capsys):
     provider = BreezeMarketDataProvider(layer)
     price = provider.get_option_price(22700, "call", dt.date(2025, 9, 30), dt.datetime(2025, 9, 23, 15, 30, 0))
     assert price == 48.0
-    assert len(layer.calls) == 2  # tried 9/23 (empty), then 9/22 (found it)
+    assert len(layer.calls) >= 2  # tried 9/23 (1min & 1day empty), then 9/22 (found it)
     out = capsys.readouterr().out
     assert "stale" in out and "2025-09-22" in out
 
@@ -129,6 +134,20 @@ def test_falls_back_multiple_days_when_several_consecutive_days_are_empty(capsys
     provider = BreezeMarketDataProvider(layer)
     price = provider.get_option_price(22700, "call", dt.date(2025, 9, 30), dt.datetime(2025, 9, 23, 15, 30, 0))
     assert price == 33.0
+
+
+def test_same_day_1day_daily_candle_fallback_when_intraday_missing(capsys):
+    layer = FakeDayByDayDataLayer(
+        by_date={},  # 1min intraday empty
+        daily_by_date={
+            dt.date(2025, 9, 23): _df([("2025-09-23 00:00:00", 250.0)]),
+        },
+    )
+    provider = BreezeMarketDataProvider(layer, max_stale_lookback_days=2)
+    price = provider.get_option_price(22700, "call", dt.date(2025, 9, 30), dt.datetime(2025, 9, 23, 15, 30, 0))
+    assert price == 250.0
+    out = capsys.readouterr().out
+    assert "official NSE daily closing price" in out
 
 
 def test_raises_clearly_when_nothing_found_within_lookback_window():

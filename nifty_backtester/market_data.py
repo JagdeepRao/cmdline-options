@@ -30,7 +30,7 @@ from .pricing import solve_iv_and_greeks, time_to_expiry_years
 # All surface as boundary conditions, and all apply equally to a live/replay
 # run (nifty_live.replay_feed and a real live session both go through this
 # same provider) -- so the fix lives here once, not duplicated per caller.
-DEFAULT_MAX_STALE_LOOKBACK_DAYS = 15
+DEFAULT_MAX_STALE_LOOKBACK_DAYS = 5
 
 
 def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
@@ -90,6 +90,7 @@ def _count_trading_days_between(start_date: dt.date, end_date: dt.date) -> int:
 
 def _most_recent_price_at_or_before(
     fetch_fn, as_of: dt.datetime, label: str, max_lookback_days: int = DEFAULT_MAX_STALE_LOOKBACK_DAYS,
+    daily_fallback_fn=None,
 ) -> float:
     """Returns the close of the most recent bar AT OR BEFORE as_of, never
     after (a bar timestamped after as_of is look-ahead, full stop, even if
@@ -112,6 +113,20 @@ def _most_recent_price_at_or_before(
         query_date = as_of.date() - dt.timedelta(days=days_back)
         df = fetch_fn(query_date, query_date)
         if df is None or df.empty:
+            if days_back == 0 and daily_fallback_fn is not None:
+                try:
+                    daily_df = daily_fallback_fn(as_of.date(), as_of.date())
+                    if daily_df is not None and not daily_df.empty:
+                        daily_df = daily_df.copy()
+                        daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
+                        close_price = float(daily_df.iloc[-1]["close"])
+                        print(
+                            f"[market_data] {label}: no 1-minute intraday bar at/before {as_of} on {as_of.date()} -- "
+                            f"using official NSE daily closing price ({close_price:.2f}) from 1day candle for {as_of.date()}."
+                        )
+                        return close_price
+                except Exception:
+                    pass
             continue
         df = df.copy()
         df["datetime"] = pd.to_datetime(df["datetime"])
@@ -128,7 +143,24 @@ def _most_recent_price_at_or_before(
             df_filtered = df[df["datetime"] <= as_of]
 
         if df_filtered.empty:
+            if days_back == 0 and daily_fallback_fn is not None:
+                # Same-day intraday 1-min fetch had no bars at/before as_of.
+                # Query official daily 1day candle for as_of.date() before stepping back to prior days.
+                try:
+                    daily_df = daily_fallback_fn(as_of.date(), as_of.date())
+                    if daily_df is not None and not daily_df.empty:
+                        daily_df = daily_df.copy()
+                        daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
+                        close_price = float(daily_df.iloc[-1]["close"])
+                        print(
+                            f"[market_data] {label}: no 1-minute intraday bar at/before {as_of} on {as_of.date()} -- "
+                            f"using official NSE daily closing price ({close_price:.2f}) from 1day candle for {as_of.date()}."
+                        )
+                        return close_price
+                except Exception:
+                    pass
             continue
+
         idx = df_filtered["datetime"].idxmax()  # most recent print
         if days_back > 0:
             trading_stale = _count_trading_days_between(query_date, as_of.date())
@@ -272,13 +304,17 @@ class BreezeMarketDataProvider(MarketDataProvider):
     def get_spot(self, as_of: dt.datetime) -> float:
         def fetch_fn(from_date, to_date):
             return self.data.get_index_historical(from_date, to_date, interval="1minute")
-        return _most_recent_price_at_or_before(fetch_fn, as_of, "spot", self.max_stale_lookback_days)
+        def daily_fn(from_date, to_date):
+            return self.data.get_index_historical(from_date, to_date, interval="1day")
+        return _most_recent_price_at_or_before(fetch_fn, as_of, "spot", self.max_stale_lookback_days, daily_fallback_fn=daily_fn)
 
     def get_option_price(self, strike: float, right: str, expiry: dt.date, as_of: dt.datetime) -> float:
         def fetch_fn(from_date, to_date):
             return self.data.get_option_historical(expiry, int(strike), right.lower(), from_date, to_date, interval="1minute")
+        def daily_fn(from_date, to_date):
+            return self.data.get_option_historical(expiry, int(strike), right.lower(), from_date, to_date, interval="1day")
         label = f"strike={strike} right={right} expiry={expiry}"
-        return _most_recent_price_at_or_before(fetch_fn, as_of, label, self.max_stale_lookback_days)
+        return _most_recent_price_at_or_before(fetch_fn, as_of, label, self.max_stale_lookback_days, daily_fallback_fn=daily_fn)
 
     def find_atm_strike(self, expiry: dt.date, as_of: dt.datetime, strike_step: int = 100) -> int:
         spot = self.get_spot(as_of)
