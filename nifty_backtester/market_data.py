@@ -93,11 +93,55 @@ def _most_recent_price_at_or_before(
     daily_fallback_fn=None,
 ) -> float:
     """Returns the close of the most recent bar AT OR BEFORE as_of, never after.
-    Fetches the full lookback range [as_of - max_lookback_days .. as_of] in a
-    single call so the underlying DataCache satisfies the request from Parquet
-    cache without issuing repeated day-by-day API queries. Handles bounded
-    data layers (ScenarioBoundedDataLayer) gracefully by catching bound violations.
+    Tries same-day fetch first [as_of.date() .. as_of.date()]. If same-day data
+    exists in Parquet cache, returns it immediately without querying prior
+    lookback dates, avoiding unnecessary network downloads.
     """
+    # 1. Same-day query first
+    try:
+        same_day_df = fetch_fn(as_of.date(), as_of.date())
+    except Exception:
+        same_day_df = None
+
+    if same_day_df is not None and not same_day_df.empty:
+        same_day_df = same_day_df.copy()
+        same_day_df["datetime"] = pd.to_datetime(same_day_df["datetime"])
+        if "status" in same_day_df.columns:
+            same_day_df = same_day_df[same_day_df["status"] != "NO_TRADES"]
+        if "close" in same_day_df.columns:
+            same_day_df = same_day_df[same_day_df["close"].notna()]
+
+        if as_of.time() >= dt.time(15, 30):
+            cutoff = max(as_of, dt.datetime.combine(as_of.date(), dt.time(15, 40)))
+        else:
+            cutoff = as_of
+
+        filtered = same_day_df[same_day_df["datetime"] <= cutoff]
+        if not filtered.empty:
+            idx = filtered["datetime"].idxmax()
+            return float(filtered.loc[idx, "close"])
+
+    # 2. If same-day 1min intraday bars are missing/empty at market close (15:30), attempt same-day 1day daily candle.
+    # If as_of is any intraday timestamp other than 15:30, using daily closing price is an error and must not occur.
+    if daily_fallback_fn is not None and as_of.time() == dt.time(15, 30):
+        try:
+            daily_df = daily_fallback_fn(as_of.date(), as_of.date())
+            if daily_df is not None and not daily_df.empty:
+                daily_df = daily_df.copy()
+                daily_df["datetime"] = pd.to_datetime(daily_df["datetime"])
+                if "status" in daily_df.columns:
+                    daily_df = daily_df[daily_df["status"] != "NO_TRADES"]
+                if "close" in daily_df.columns and not daily_df["close"].dropna().empty:
+                    close_price = float(daily_df["close"].dropna().iloc[-1])
+                    print(
+                        f"[market_data] {label}: no 15:30 1-minute intraday candle on {as_of.date()} -- "
+                        f"using 1day closing price ({close_price:.2f}) marked as '1DAYCLOSING' status."
+                    )
+                    return close_price
+        except Exception:
+            pass
+
+    # 3. If same-day data is completely missing, fetch full lookback window
     start_date = as_of.date() - dt.timedelta(days=max_lookback_days)
     end_date = as_of.date()
 
@@ -172,8 +216,8 @@ def _most_recent_price_at_or_before(
                 )
             return float(latest_row["close"])
 
-    # If same-day intraday 1min bars are missing or empty, attempt same-day 1day daily candle
-    if daily_fallback_fn is not None:
+    # If same-day intraday 1min bars are missing or empty at market close (15:30), attempt same-day 1day daily candle
+    if daily_fallback_fn is not None and as_of.time() == dt.time(15, 30):
         try:
             daily_df = daily_fallback_fn(as_of.date(), as_of.date())
             if daily_df is not None and not daily_df.empty:

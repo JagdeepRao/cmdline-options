@@ -74,6 +74,7 @@ def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: 
       - high: max(open, close)
       - low: min(open, close)
       - status: '1DAYCLOSING'
+    Avoids duplicate/recursive downloads if the 1day candle returns no data or error.
     """
     if df is None:
         df = pd.DataFrame()
@@ -105,11 +106,19 @@ def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: 
             has_330 = not day_bars.empty and any(day_bars["datetime"].dt.time == dt.time(15, 30))
             if not has_330:
                 try:
-                    daily_df = provider_obj.get_option_historical(expiry, strike, right, cur, cur, interval="1day")
-                    if daily_df is not None and not daily_df.empty:
-                        # Drop NO_TRADES sentinel if present in daily_df
-                        if "status" in daily_df.columns:
-                            daily_df = daily_df[daily_df["status"] != "NO_TRADES"]
+                    # Query 1day historical data directly from Breeze Connect API without routing through
+                    # DataCache so NO 1day.parquet files are ever created or cached on disk.
+                    resp = provider_obj.breeze.get_historical_data_v2(
+                        interval="1day",
+                        from_date=_breeze_date(cur, dt.time(0, 0, 0)),
+                        to_date=_breeze_date(cur, dt.time(23, 59, 59)),
+                        stock_code="NIFTY", exchange_code="NFO",
+                        product_type="options", expiry_date=_breeze_date(expiry),
+                        right=right, strike_price=str(strike),
+                    )
+                    daily_rows = resp.get("Success") if isinstance(resp, dict) else None
+                    if daily_rows:
+                        daily_df = pd.DataFrame(daily_rows)
                         if not daily_df.empty and "close" in daily_df.columns and not pd.isna(daily_df.iloc[-1]["close"]):
                             day_close = float(daily_df.iloc[-1]["close"])
                             prev_close = float(day_bars.iloc[-1]["close"]) if not day_bars.empty and "close" in day_bars.columns and not pd.isna(day_bars.iloc[-1]["close"]) else day_close
