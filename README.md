@@ -204,8 +204,17 @@ already built data-source-agnostic:
 Remaining phases: `BreezeWebSocketFeed` (a lower-latency, push-based
 alternative to polling Breeze's REST endpoint — `run_live_monitor()`
 already works against a real live feed today via polling, so this is an
-efficiency upgrade, not a new code path), then webapp integration. A
-periodic full-option-chain downloader was considered and deliberately
+efficiency upgrade, not a new code path), then webapp integration.
+**Before building `BreezeWebSocketFeed`, read STRATEGY.md §6** — Breeze's
+websocket has two structurally different modes (confirmed from the SDK
+source and real user-reported issues, not assumed), and neither is
+reliable enough to be the system of record for OHLC bars/interval volume
+the way the existing REST/`DataCache` path is. The plan is a split:
+websocket for point-price awareness only, REST historical for anything
+needing real bars (indicators, future charting) — get this wrong and a
+webapp chart could silently show corrupted volume with no obvious cause.
+
+A periodic full-option-chain downloader was considered and deliberately
 **not** built — every strike this codebase trades is already resolved
 analytically (ATM via put-call parity, delta-target via a directional
 walk, just-OTM via arithmetic), so a bulk chain scan filtered by

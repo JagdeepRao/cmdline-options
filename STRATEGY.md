@@ -307,6 +307,126 @@ here for visibility.
 
 ---
 
+## 6. Live feed architecture: Breeze websocket modes and their limitations (pre-implementation research)
+
+**Status: research/documentation only — `BreezeWebSocketFeed` has NOT been
+built yet.** This section exists so that whoever builds it (later phase)
+starts from confirmed facts rather than re-discovering them, and doesn't
+accidentally build a charting/indicator pipeline on a data source that
+can't reliably support it. Everything below is either confirmed directly
+by reading the installed `breeze_connect` SDK source, or confirmed via
+real user reports on ICICI's own SDK issue tracker — nothing here is
+guessed. Where something remains genuinely unconfirmed, it's stated as
+such rather than assumed one way or the other.
+
+### 6.1 There are two, structurally different websocket modes
+
+`breeze.subscribe_feeds(...)` silently routes to one of two completely
+different code paths depending on whether an `interval` argument is
+passed — confirmed directly from `breeze_connect.py`'s `subscribe_feeds`
+body:
+
+- **No `interval` ("Live Feed" mode)** — routed through
+  `sio_rate_refresh_handler`, parsed by `parse_data()`.
+- **`interval` set** to one of the CONFIRMED valid values
+  `"1second"`, `"1minute"`, `"5minute"`, `"30minute"`
+  (`config.INTERVAL_TYPES_STREAM_OHLC`) — routed through a *separate*
+  `sio_ohlcv_stream_handler` / `watch_stream_data()`, parsed by a
+  *different* function, `parse_ohlc_data()`.
+
+These are not two views of the same data — they are different socket.io
+rooms with independently-implemented parsers, confirmed by real user
+reports of exactly this split
+([issue #133](https://github.com/Idirect-Tech/Breeze-Python-SDK/issues/133),
+subscribing with `interval="1second"` explicitly to reach candle mode).
+
+### 6.2 "Live Feed" mode: confirmed ambiguous, and confirmed NOT per-tick
+
+Reading `parse_data()` directly shows AT LEAST two incompatible
+field-naming schemes depending on the subscribed token's exchange/type
+encoding:
+
+- `exchange == '6'` branch: fields include `last` (LTP), `ttq` (total
+  traded quantity), `CurrOpenInterest`, `ltt` (last traded time).
+- `data_type == '1'` branch: a *different* set of field names (`last`,
+  `OI`/`ttq` in a 23-field F&O variant; a 21-field equity/index variant
+  with **no OI field at all**).
+
+Which branch actually fires for a given subscription cannot be determined
+from source alone — this would need a live subscription to observe.
+
+More importantly, a real user (
+[issue #167](https://github.com/Idirect-Tech/Breeze-Python-SDK/issues/167))
+confirms directly that the OHLC-labeled fields in this mode (`open`,
+`high`, `low`, `close`) are **not per-tick trade prints** — they're the
+running session-to-date OHLC as of that moment, updated on every tick.
+By the same logic, `ttq` ("total traded quantity") should be read as
+**cumulative volume for the day**, not volume attributable to that one
+tick or to any specific time window. There is no field in this mode that
+directly answers "how much traded between two points in time" — that
+would have to be computed as a delta between two observed cumulative
+values, which is fragile across any dropped tick, reconnect, or gap (a
+missed update makes the next delta silently absorb more volume than it
+should, with no way to detect that from the tick stream alone).
+
+### 6.3 "OHLCV/Candle" mode: a clean, confirmed schema — but one open question
+
+`parse_ohlc_data()` is a single, unambiguous, confirmed schema for NFO
+(comma-separated positional fields): `exchange_code`, `stock_code`,
+`expiry_date`, `strike_price`, `right_type`, `low`, `high`, `open`,
+`close`, `volume`, `oi`, `datetime` (plus a shorter variant without
+`strike_price`/`right_type` for instruments where those don't apply).
+This is a real, single source of truth per message — nothing like the
+ambiguity in §6.2.
+
+**Genuinely unconfirmed, not found in the SDK source or in ICICI's public
+docs/community threads searched so far:** whether `volume` in this mode is
+the volume traded *within that one candle interval*, or is *still*
+cumulative-since-market-open (as it explicitly is in Live Feed mode). This
+is the exact distinction that matters for the stated use case — "volume
+in time interval for OHLC mode/charting" — and it can only be resolved by
+subscribing and observing real values against a known interval, not by
+further reading of source or docs.
+
+### 6.4 Design implication for this codebase
+
+Regardless of how §6.3's open question resolves, **websocket delivery of
+any kind is not reliable enough to be the system of record for OHLC bars
+or interval volume** — a dropped connection or missed message silently
+loses that interval, with no built-in gap-detection or backfill. This
+codebase already has a system of record for exactly that: the REST
+historical endpoint (`get_historical_data_v2`, confirmed schema — see
+`data_layer_breeze.py`'s module docstring), fetched incrementally through
+`DataCache` (Phase 1-era; only ever fetches the missing tail of a range,
+not the whole thing on every call — already cheap).
+
+The resulting split, planned for whenever `BreezeWebSocketFeed` is
+actually built:
+
+- **Websocket (either mode) → point-price awareness only.** Feed a
+  "latest known price" cache that backs `get_spot()`/`get_option_price()`
+  -equivalent lookups for `live_engine.run_live_monitor()`'s per-step
+  strategy evaluation — exactly the use case `live_polling_clock()`
+  already serves via REST polling today (§ README "Live monitoring").
+  Nothing about this use case cares whether a value is cumulative or
+  per-interval; it only ever wants "what's the price right now."
+- **REST historical (existing `DataCache`-backed path) → everything that
+  needs real bars.** `RSIIndicator`, `SupertrendEMAIndicator`,
+  `RenkoSuperTrendIndicator`, and any future charting/webapp display all
+  need genuine OHLC with trustworthy volume — these should keep pulling
+  from `BreezeMarketDataProvider.spot_series()`/`option_price_series()`
+  (or their live equivalents), refreshed periodically, not reconstructed
+  from websocket messages.
+
+In short: the websocket upgrade (replacing `live_polling_clock()`'s REST
+polling to avoid rate-limiting) is worth doing for the point-price path,
+but it does **not** replace the REST/`DataCache` path for anything
+requiring aggregation — that split should be explicit in
+`BreezeWebSocketFeed`'s design from the start, not discovered after the
+fact when a chart shows corrupted volume.
+
+---
+
 ## 7. Campaign strategy: funded strangle theta engine (`campaign_strategy.py`)
 
 A distinct strategy shape, NOT built on `AdjustmentStrategy`/`FullBacktestConfig`
