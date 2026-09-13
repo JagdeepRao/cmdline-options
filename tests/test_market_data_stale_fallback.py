@@ -76,6 +76,19 @@ def test_market_close_boundary_finds_1529_candle_when_1530_does_not_exist(capsys
     assert price == 55.5
 
 
+def test_market_close_post_market_print_found_for_same_day(capsys):
+    """At market close (15:30:00), NSE post-market closing prints (e.g. 15:39:00)
+    on the SAME day must be resolved without falling back to a prior day."""
+    layer = FakeDayByDayDataLayer({
+        dt.date(2024, 1, 2): _df([("2024-01-02 15:39:00", 120.0)]),
+    })
+    provider = BreezeMarketDataProvider(layer)
+    price = provider.get_option_price(22700, "call", dt.date(2024, 1, 9), dt.datetime(2024, 1, 2, 15, 30, 0))
+    assert price == 120.0
+    out = capsys.readouterr().out
+    assert "stale" not in out
+
+
 def test_empty_day_falls_back_to_most_recent_prior_day_with_warning(capsys):
     """Regression test for boundary condition #2: a whole day with zero
     prints for this specific contract (thin/illiquid strike) must fall

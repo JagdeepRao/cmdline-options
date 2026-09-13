@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
     parser.add_argument("--data-source", default="auto", choices=VALID_SOURCES)
     parser.add_argument("--initial-spot", type=float, default=24500.0, help="only affects the SYNTHETIC fallback")
+    parser.add_argument("--verbose", "-v", action="store_true", help="list out trades/actions being taken during the strategy run")
     args = parser.parse_args()
 
     campaign_start = dt.datetime.strptime(args.campaign_start, "%Y-%m-%d").date()
@@ -98,22 +99,34 @@ def main():
         return provider
 
     rows = []
+    all_results = []
     for t in times:
         c1_config = CampaignConfig(strike_search_range=args.strike_search_range, roll_and_close_time=t, initial_capital=args.initial_capital)
         c1_results = run_chained_campaigns(factory_for_source, calendar, holidays, campaign_start, args.num_months, c1_config)
         for result in c1_results:
             report = metrics.full_report(result.equity_curve, result.trade_pnls, c1_config.initial_capital)
+            label = f"Campaign 1 (funded strangle) @ {t.strftime('%H:%M')} [{result.schedule.monthly_expiry.strftime('%Y-%m')}]"
+            if args.verbose:
+                print(f"\n=================== TRADE LOG: {label} ===================")
+                for entry in result.action_log:
+                    print(f"  {entry}")
             report.update({
                 "campaign": "1: funded strangle", "adjust_time": t.strftime("%H:%M"),
                 "campaign_month": result.schedule.monthly_expiry.strftime("%Y-%m"),
                 "source": getattr(factory_for_source, "last_source_label", "?"),
             })
             rows.append(report)
+            all_results.append((label, result, report))
 
         c2_config = StraddleCampaignConfig(recenter_threshold_points=args.recenter_threshold_points, adjustment_time=t, initial_capital=args.initial_capital)
         c2_results = run_chained_straddle_campaigns(factory_for_source, calendar, holidays, campaign_start, args.num_months, c2_config)
         for result in c2_results:
             report = metrics.full_report(result.equity_curve, result.trade_pnls, c2_config.initial_capital)
+            label = f"Campaign 2 (recentered straddle) @ {t.strftime('%H:%M')} [{result.schedule.monthly_expiry.strftime('%Y-%m')}]"
+            if args.verbose:
+                print(f"\n=================== TRADE LOG: {label} ===================")
+                for entry in result.action_log:
+                    print(f"  {entry}")
             report.update({
                 "campaign": "2: recentered straddle", "adjust_time": t.strftime("%H:%M"),
                 "campaign_month": result.schedule.monthly_expiry.strftime("%Y-%m"),
@@ -121,6 +134,7 @@ def main():
                 "num_recenters": result.num_recenters,
             })
             rows.append(report)
+            all_results.append((label, result, report))
 
     df = pd.DataFrame(rows)
     pd.set_option("display.width", 220)
@@ -134,6 +148,36 @@ def main():
     print("\nBest campaign by month (by total_return_pct):")
     best = df.loc[df.groupby("campaign_month")["total_return_pct"].idxmax()]
     print(best[["campaign_month", "campaign", "adjust_time", "total_return_pct"]].to_string(index=False))
+
+    _print_tearsheet_report(all_results, df)
+
+
+def _print_tearsheet_report(all_results, df):
+    print("\n" + "=" * 80)
+    print("                         TEARSHEET REPORT")
+    print("=" * 80)
+    for label, result, r in all_results:
+        pnls = result.trade_pnls
+        winning_trades = [p for p in pnls if p > 0]
+        losing_trades = [p for p in pnls if p < 0]
+        avg_win = sum(winning_trades) / len(winning_trades) if winning_trades else 0.0
+        avg_loss = sum(losing_trades) / len(losing_trades) if losing_trades else 0.0
+        max_win = max(winning_trades) if winning_trades else 0.0
+        max_loss = min(losing_trades) if losing_trades else 0.0
+
+        print(f"\n--- {label} ---")
+        print(f"  Initial Capital    : {r.get('initial_capital', 100000.0):>12.2f}")
+        print(f"  Ending Equity      : {r.get('ending_equity', 0.0):>12.2f}")
+        print(f"  Total Return       : {r.get('total_return', 0.0):>12.2f} ({r.get('total_return_pct', 0.0):>6.2f}%)")
+        print(f"  Max Drawdown       : {r.get('max_drawdown', 0.0):>12.2f} ({r.get('max_drawdown_pct', 0.0):>6.2f}%)")
+        print(f"  Sharpe Ratio       : {r.get('sharpe', 0.0):>12.3f}")
+        print(f"  Sortino Ratio      : {r.get('sortino', 0.0):>12.3f}")
+        print(f"  Profit Factor      : {r.get('profit_factor', 0.0):>12.3f}")
+        print(f"  Total Trades       : {r.get('num_trades', 0):>12d}")
+        print(f"  Win Rate           : {r.get('win_rate', 0.0):>12.1f}%")
+        print(f"  Avg Win / Avg Loss : {avg_win:>8.2f} / {avg_loss:>8.2f}")
+        print(f"  Max Win / Max Loss : {max_win:>8.2f} / {max_loss:>8.2f}")
+    print("\n" + "=" * 80)
 
 
 if __name__ == "__main__":

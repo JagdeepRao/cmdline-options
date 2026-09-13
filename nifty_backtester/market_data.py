@@ -58,6 +58,33 @@ def _resample_ohlc(df: pd.DataFrame, freq_minutes: int) -> pd.DataFrame:
     return df.resample(f"{freq_minutes}min").agg(agg).dropna(how="all").reset_index()
 
 
+_HOLIDAYS_CACHE = None
+
+
+def _get_holidays() -> set[dt.date]:
+    global _HOLIDAYS_CACHE
+    if _HOLIDAYS_CACHE is None:
+        try:
+            from .expiry_utils import load_holidays
+            _HOLIDAYS_CACHE = load_holidays()
+        except Exception:
+            _HOLIDAYS_CACHE = set()
+    return _HOLIDAYS_CACHE
+
+
+def _count_trading_days_between(start_date: dt.date, end_date: dt.date) -> int:
+    """Counts trading days strictly after start_date up to and including end_date."""
+    from .expiry_utils import is_trading_day
+    holidays = _get_holidays()
+    count = 0
+    cur = start_date + dt.timedelta(days=1)
+    while cur <= end_date:
+        if is_trading_day(cur, holidays):
+            count += 1
+        cur += dt.timedelta(days=1)
+    return count
+
+
 def _most_recent_price_at_or_before(
     fetch_fn, as_of: dt.datetime, label: str, max_lookback_days: int = DEFAULT_MAX_STALE_LOOKBACK_DAYS,
 ) -> float:
@@ -85,19 +112,34 @@ def _most_recent_price_at_or_before(
             continue
         df = df.copy()
         df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df[df["datetime"] <= as_of]  # never use a bar from AFTER as_of
-        if df.empty:
+
+        if days_back == 0 and as_of.time() >= dt.time(15, 30):
+            # Market close query on the same day: allow bars up to 15:40 on as_of.date()
+            # to capture NSE post-market closing/settlement prints (e.g. 15:39:00)
+            cutoff = max(as_of, dt.datetime.combine(as_of.date(), dt.time(15, 40)))
+            df_filtered = df[df["datetime"] <= cutoff]
+        elif days_back > 0:
+            # Prior day fallback: any bar on that prior day is before as_of
+            df_filtered = df[df["datetime"] <= dt.datetime.combine(query_date, dt.time(23, 59, 59))]
+        else:
+            df_filtered = df[df["datetime"] <= as_of]
+
+        if df_filtered.empty:
             continue
-        idx = df["datetime"].idxmax()  # most recent print at/before as_of
+        idx = df_filtered["datetime"].idxmax()  # most recent print
         if days_back > 0:
+            trading_stale = _count_trading_days_between(query_date, as_of.date())
+            stale_str = f"{trading_stale} trading day(s) stale"
+            if days_back != trading_stale:
+                stale_str += f" ({days_back} calendar days)"
             print(
                 f"[market_data] {label}: no usable bar at/before {as_of} on {as_of.date()} -- "
                 f"falling back to the last available print from {query_date} "
-                f"({df.loc[idx, 'datetime']}), {days_back} day(s) stale. Treat this bar with "
+                f"({df_filtered.loc[idx, 'datetime']}), {stale_str}. Treat this bar with "
                 f"extra caution -- it reflects whatever the market last did on {query_date}, "
                 f"not {as_of.date()}."
             )
-        return float(df.loc[idx, "close"])
+        return float(df_filtered.loc[idx, "close"])
 
     raise ValueError(
         f"{label}: no usable data at or before {as_of}, even after looking back "
