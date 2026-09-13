@@ -14,19 +14,22 @@ from .pricing import solve_iv_and_greeks, time_to_expiry_years
 # How many calendar days BreezeMarketDataProvider will step BACKWARD (never
 # forward -- see _most_recent_price_at_or_before) looking for a usable
 # print when the requested day has none. Real-world boundary conditions
-# this exists for (both found via a live run, not hypothesized):
-#   1. The last 1-minute candle of an NSE session is timestamped 15:29,
-#      not 15:30 -- querying exactly at market close (a common
-#      roll/close/adjustment time) used to raise if that specific day's
-#      fetch came back empty, rather than falling back to the most recent
-#      prior print.
+# this exists for:
+#   1. The last intraday 1-minute candle of an NSE session is timestamped
+#      15:29, or post-market closing/settlement prints occur up to 15:39/15:40.
+#      When querying at market close (15:30:00), _most_recent_price_at_or_before
+#      allows same-day prints up to 15:40 on that date so same-day closing/
+#      settlement candles resolve correctly without triggering multi-day
+#      lookback fallbacks.
 #   2. A given strike genuinely may not trade at all on a given day (thin
 #      OTM/ITM weeklies especially) -- Breeze then returns zero rows for
 #      that whole day, not just a gap at one timestamp.
-# Both surfaced as the same failure mode (a hard ValueError mid-backtest),
-# and both apply equally to a live/replay run (nifty_live.replay_feed and
-# a real live session both go through this same provider) -- so the fix
-# lives here once, not duplicated per caller.
+#   3. When stepping backward across weekends or holidays, stale warnings
+#      report actual trading days stale alongside calendar days to avoid
+#      misleading multi-day stale warnings across weekend gaps.
+# All surface as boundary conditions, and all apply equally to a live/replay
+# run (nifty_live.replay_feed and a real live session both go through this
+# same provider) -- so the fix lives here once, not duplicated per caller.
 DEFAULT_MAX_STALE_LOOKBACK_DAYS = 5
 
 
