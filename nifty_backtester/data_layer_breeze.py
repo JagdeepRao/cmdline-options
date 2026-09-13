@@ -68,8 +68,13 @@ RATE_LIMIT_SLEEP_SECONDS = 1.0  # sleep duration when hitting a rate limit / err
 
 def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: dt.date, strike: int, right: str, from_date: dt.date, to_date: dt.date) -> pd.DataFrame:
     """Checks each trading date in the returned 1minute DataFrame for a missing 15:30 candle.
-    If missing, fetches the 1day candle for that date and appends a synthesized 15:30 bar
-    tagged with status='1DAYCLOSING' so downstream cache/audit logic tracks it."""
+    If missing, fetches the 1day candle for that date and appends a synthesized 15:30 bar:
+      - close: day's 1day closing price
+      - open: closing price of previous 1min candle
+      - high: max(open, close)
+      - low: min(open, close)
+      - status: '1DAYCLOSING'
+    """
     if df.empty or "datetime" not in df.columns:
         return df
     df = df.copy()
@@ -84,18 +89,19 @@ def _supplement_missing_closing_candles(provider_obj, df: pd.DataFrame, expiry: 
         day_bars = df[df["datetime"].dt.date == d]
         # Check if 15:30 bar exists
         has_330 = any(day_bars["datetime"].dt.time == dt.time(15, 30))
-        if not has_330:
+        if not has_330 and not day_bars.empty:
             try:
                 daily_df = provider_obj.get_option_historical(expiry, strike, right, d, d, interval="1day")
                 if daily_df is not None and not daily_df.empty:
-                    close_val = float(daily_df.iloc[-1]["close"])
+                    day_close = float(daily_df.iloc[-1]["close"])
+                    prev_close = float(day_bars.iloc[-1]["close"])
                     synth_ts = pd.Timestamp(dt.datetime.combine(d, dt.time(15, 30)))
-                    row = {col: day_bars.iloc[-1][col] for col in df.columns if col not in ("datetime", "close", "status")}
+                    row = {col: day_bars.iloc[-1][col] for col in df.columns if col not in ("datetime", "open", "high", "low", "close", "status")}
                     row["datetime"] = synth_ts
-                    row["close"] = close_val
-                    row["open"] = close_val
-                    row["high"] = close_val
-                    row["low"] = close_val
+                    row["close"] = day_close
+                    row["open"] = prev_close
+                    row["high"] = max(prev_close, day_close)
+                    row["low"] = min(prev_close, day_close)
                     row["status"] = "1DAYCLOSING"
                     new_rows.append(row)
             except Exception:
