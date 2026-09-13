@@ -217,7 +217,7 @@ class NiftyOptionsDataBreeze:
             df = pd.DataFrame(all_rows)
             # If interval is 1minute and 15:30 candle is missing for a trading day,
             # supply the missing 15:30 bar from 1day candle with status='1DAYCLOSING'
-            if interval == "1minute" and not df.empty:
+            if interval == "1minute":
                 df = _supplement_missing_closing_candles(self, df, expiry, strike, right, fd, td)
             return df
 

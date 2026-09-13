@@ -46,6 +46,30 @@ def test_cache_miss_then_hit(tmp_path):
     assert len(result2) == len(result1)
 
 
+def test_incomplete_intraday_time_period_triggers_refetch(tmp_path):
+    cache = DataCache(tmp_path)
+    # File has 2 bars covering 09:15 to 11:00 AM on 2024-01-04 (missing market close 15:29+)
+    seed = pd.DataFrame({
+        "datetime": [pd.Timestamp("2024-01-04 09:15:00"), pd.Timestamp("2024-01-04 11:00:00")],
+        "close": [100.0, 105.0],
+    })
+    seed.to_parquet(tmp_path / "INCOMPLETE_KEY.parquet")
+
+    fetched_ranges = []
+    def fake_fetch(fd, td):
+        fetched_ranges.append((fd, td))
+        return pd.DataFrame({
+            "datetime": [pd.Timestamp("2024-01-04 15:30:00")],
+            "close": [110.0],
+            "status": ["1DAYCLOSING"],
+        })
+
+    res = cache.get("INCOMPLETE_KEY", dt.date(2024, 1, 4), dt.date(2024, 1, 4), fake_fetch)
+    assert len(fetched_ranges) == 1
+    assert fetched_ranges[0] == (dt.date(2024, 1, 4), dt.date(2024, 1, 4))
+    assert len(res) == 3
+
+
 def test_status_column_persisted_in_cache(tmp_path):
     cache = DataCache(tmp_path)
     def fetch_fn(fd, td):

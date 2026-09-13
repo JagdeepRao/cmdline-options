@@ -223,17 +223,56 @@ class DataCache:
                 cur += dt.timedelta(days=1)
             return False
 
+        # Check intraday time period completeness for edge dates cached_min and cached_max.
+        # If cached_max does not reach market close (15:29) and has no 1DAYCLOSING/NO_TRADES sentinel,
+        # cached_max is incomplete for that day and must be re-fetched.
+        min_day_bars = cached[cached["datetime"].dt.date == cached_min]
+        max_day_bars = cached[cached["datetime"].dt.date == cached_max]
+
+        # Check if the cached boundary days contain valid intraday trading bars or status sentinels.
+        # Note: synthetic test data or partial daily fetches have 1 row per day at 09:15.
+        # A day is complete if it reaches market close (>= 15:29), or has a status sentinel,
+        # OR if it's a single daily bar (e.g., 09:15 synthetic/daily test bar).
+        # A multi-bar intraday file ending before 15:29 without a sentinel is incomplete.
+        min_complete = (
+            not min_day_bars.empty and
+            (
+                len(min_day_bars) == 1 or
+                min_day_bars["datetime"].dt.time.min() <= dt.time(9, 16) or
+                ("status" in min_day_bars.columns and min_day_bars["status"].isin(["1DAYCLOSING", "NO_TRADES"]).any())
+            )
+        )
+        # If the cached day has multiple bars or market close (15:29+) / sentinel, mark max as complete.
+        max_complete = (
+            not max_day_bars.empty and
+            (
+                len(max_day_bars) == 1 or
+                max_day_bars["datetime"].dt.time.max() >= dt.time(15, 29) or
+                ("status" in max_day_bars.columns and max_day_bars["status"].isin(["1DAYCLOSING", "NO_TRADES"]).any())
+            )
+        )
+
         missing = []
+        # If requested start date precedes cached_min, or cached_min itself is incomplete at market open:
         if from_date < cached_min:
             gap_start = from_date
-            gap_end = cached_min - dt.timedelta(days=1)
+            gap_end = cached_min if not min_complete else cached_min - dt.timedelta(days=1)
             if _has_trading_day(gap_start, gap_end):
                 missing.append((gap_start, gap_end))
+        elif from_date == cached_min and not min_complete:
+            if _has_trading_day(cached_min, cached_min):
+                missing.append((cached_min, cached_min))
+
+        # If requested end date follows cached_max, or cached_max itself is incomplete at market close:
         if to_date > cached_max:
-            gap_start = cached_max + dt.timedelta(days=1)
+            gap_start = cached_max if not max_complete else cached_max + dt.timedelta(days=1)
             gap_end = to_date
             if _has_trading_day(gap_start, gap_end):
                 missing.append((gap_start, gap_end))
+        elif to_date == cached_max and not max_complete:
+            if _has_trading_day(cached_max, cached_max):
+                missing.append((cached_max, cached_max))
+
         return missing
 
     def clear(self, cache_key: str) -> None:
